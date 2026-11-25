@@ -430,3 +430,26 @@ export function resizeProjectCanvas(
     activeLayerIndex: Math.min(project.activeLayerIndex, activeFrame.layers.length - 1),
   };
 }
+
+export function applyLayerPixelTransform(
+  pixels: Uint32Array,
+  w: number,
+  h: number,
+  mapDestIdx: (x: number, y: number, w: number, h: number) => number
+): { oldPixels: Map<number, number>; newPixels: Map<number, number> } {
+  const copy = new Uint32Array(pixels);
+  const oldPixels = new Map<number, number>();
+  const newPixels = new Map<number, number>();
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const dst = mapDestIdx(x, y, w, h);
+      const val = copy[y * w + x];
+      if (pixels[dst] !== val) {
+        oldPixels.set(dst, pixels[dst]);
+        newPixels.set(dst, val);
+        pixels[dst] = val;
+      }
+    }
+  }
+  return { oldPixels, newPixels };
+}

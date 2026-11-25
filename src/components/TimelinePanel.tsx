@@ -127,7 +127,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
   } | null>(null);
 
   const canDelete = frames.length > 1;
-  const rightOffset = layersOpen ? `min(${layersWidth}px, 74vw)` : '14px';
+  const isNarrow = typeof window !== 'undefined' && window.innerWidth < 640;
+  const rightOffset = layersOpen && !isNarrow ? `min(${layersWidth}px, 74vw)` : '14px';
   const thumbSize = Math.max(34, Math.min(168, panelHeight - 84));
 
   const handleResizePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -160,6 +161,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
     <div
       role="region"
       aria-label="Animation Timeline"
+      className="ui-scaled"
       style={{
         position: 'absolute',
         bottom: 0,
@@ -184,12 +186,12 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
         title={open ? 'Collapse timeline' : 'Expand timeline'}
         style={{
           pointerEvents: 'auto',
-          width: 60,
-          height: 22,
+          width: 64,
+          height: 24,
           borderRadius: '10px 10px 0 0',
           border: '1.5px solid var(--text-muted)',
           borderBottom: 'none',
-          background: 'color-mix(in srgb, var(--surface) 96%, transparent)',
+          background: 'var(--surface)',
           color: 'var(--text-primary)',
           boxShadow: '0 -2px 8px rgba(0, 0, 0, 0.14)',
           display: 'flex',
@@ -197,7 +199,6 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           justifyContent: 'center',
           cursor: 'pointer',
           padding: 0,
-          backdropFilter: 'blur(8px)',
         }}
       >
         {open ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
@@ -211,9 +212,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           width: '100%',
           height: open ? 0 : 14,
           opacity: open ? 0 : 1,
-          background: 'color-mix(in srgb, var(--surface) 96%, transparent)',
+          background: 'var(--surface)',
           borderTop: open ? 'none' : '1px solid var(--border)',
-          backdropFilter: 'blur(8px)',
           transition: 'height 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease',
         }}
       />
@@ -221,6 +221,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
       {/* Collapsible & resizable timeline drawer */}
       <div
         aria-hidden={!open}
+        inert={!open}
         style={{
           pointerEvents: open ? 'auto' : 'none',
           width: '100%',
@@ -230,9 +231,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
           transform: open ? 'translateY(0) scale(1)' : 'translateY(8px) scale(0.98)',
           transformOrigin: 'bottom center',
           overflow: 'hidden',
-          background: 'color-mix(in srgb, var(--surface) 96%, transparent)',
-          borderTop: open ? '1px solid var(--border)' : 'none',
-          backdropFilter: 'blur(8px)',
+          background: 'var(--surface)',
+          borderTop: open ? '1px solid var(--border)' : '0px solid transparent',
           color: 'var(--text-primary)',
           display: 'flex',
           flexDirection: 'column',
@@ -575,7 +575,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                         width: 6,
                         height: 6,
                         borderRadius: '50%',
-                        background: isPrevOnion ? '#e85a2d' : '#3b82f6',
+                        background: isPrevOnion ? 'var(--onion-prev)' : 'var(--onion-next)',
                       }}
                       title={isPrevOnion ? 'Previous onion skin' : 'Next onion skin'}
                     />

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import {
   ChevronDown,
   ChevronLeft,
@@ -19,46 +20,8 @@ import {
   loadCustomPalettes,
   saveCustomPalette,
 } from '../engine/storage';
+import { buildArgb, hsvToRgb, rgbToHsv } from '../engine/colorUtils';
 import { SavedPalette } from '../engine/types';
-
-function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
-  const c = v * s;
-  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-  const m = v - c;
-  let r = 0, g = 0, b = 0;
-  if (h < 60) [r, g, b] = [c, x, 0];
-  else if (h < 120) [r, g, b] = [x, c, 0];
-  else if (h < 180) [r, g, b] = [0, c, x];
-  else if (h < 240) [r, g, b] = [0, x, c];
-  else if (h < 300) [r, g, b] = [x, 0, c];
-  else [r, g, b] = [c, 0, x];
-  return [
-    Math.round((r + m) * 255),
-    Math.round((g + m) * 255),
-    Math.round((b + m) * 255),
-  ];
-}
-
-function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
-  const rn = r / 255, gn = g / 255, bn = b / 255;
-  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
-  const d = max - min;
-  let h = 0;
-  if (d !== 0) {
-    if (max === rn) h = 60 * (((gn - bn) / d) % 6);
-    else if (max === gn) h = 60 * ((bn - rn) / d + 2);
-    else h = 60 * ((rn - gn) / d + 4);
-  }
-  if (h < 0) h += 360;
-  const s = max === 0 ? 0 : d / max;
-  return [h, s, max];
-}
-
-function buildArgb(h: number, s: number, v: number, a: number): number {
-  const [r, g, b] = hsvToRgb(h, s, v);
-  const alpha = Math.round(a * 255) & 0xff;
-  return ((alpha << 24) | (r << 16) | (g << 8) | b) >>> 0;
-}
 
 export function ColorPanel({
   activeColor,
@@ -86,6 +49,8 @@ export function ColorPanel({
 
   const [allPalettes, setAllPalettes] = useState<SavedPalette[]>(PRESET_PALETTES);
   const [selectedPalId, setSelectedPalId] = useState('');
+  const [creatingPalette, setCreatingPalette] = useState(false);
+  const [newPaletteName, setNewPaletteName] = useState('');
   const [extractDataUrl, setExtractDataUrl] = useState<string | null>(null);
   const [extractColors, setExtractColors] = useState<number[]>([]);
   const [extractCount, setExtractCount] = useState(16);
@@ -146,6 +111,8 @@ export function ColorPanel({
       setAllPalettes([...custom, ...PRESET_PALETTES]);
     });
   }, []);
+
+  useEscapeKey(() => setExpanded(false), expanded);
 
   useEffect(() => {
     if (!expanded) return;
@@ -340,8 +307,8 @@ export function ColorPanel({
         aria-label="Scroll palette left"
         title="Scroll palette left"
         style={{
-          width: 18,
-          height: 24,
+          width: 24,
+          height: 26,
           borderRadius: 5,
           border: 'none',
           background: 'transparent',
@@ -401,8 +368,8 @@ export function ColorPanel({
               aria-label={`Color #${argbToHex6(c)}`}
               aria-pressed={isActive}
               style={{
-                width: 22,
-                height: 22,
+                width: 24,
+                height: 24,
                 borderRadius: 5,
                 background: argbToCss(c),
                 border: isActive ? '2px solid var(--accent)' : '1px solid var(--border)',
@@ -426,8 +393,8 @@ export function ColorPanel({
             persistIfCustom(next);
           }}
           style={{
-            width: 22,
-            height: 22,
+            width: 24,
+            height: 24,
             borderRadius: 5,
             border: '1px dashed var(--border)',
             padding: 0,
@@ -445,8 +412,8 @@ export function ColorPanel({
         aria-label="Scroll palette right"
         title="More colors (scroll right)"
         style={{
-          width: 18,
-          height: 24,
+          width: 24,
+          height: 26,
           borderRadius: 5,
           border: 'none',
           background: 'transparent',
@@ -485,14 +452,24 @@ export function ColorPanel({
       />
 
       {/* Dropdown Color Picker & Palette Manager Popover */}
-      {expanded && (
+      {expanded && (() => {
+        const anchorRect = containerRef.current?.getBoundingClientRect();
+        const popoverLeft = anchorRect
+          ? Math.max(8, Math.min(anchorRect.left, window.innerWidth - 276))
+          : 8;
+        const popoverTop = anchorRect
+          ? Math.max(8, Math.min(anchorRect.bottom + 6, window.innerHeight - 280))
+          : 54;
+        return (
         <div
           className="floating-card menu-pop"
           style={{
-            position: 'absolute',
-            top: 44,
-            left: 0,
-            width: 268,
+            position: 'fixed',
+            top: popoverTop,
+            left: popoverLeft,
+            width: 'min(268px, calc(100vw - 16px))',
+            maxHeight: 'calc(100vh - 64px)',
+            overflowY: 'auto',
             padding: 12,
             background: 'var(--surface)',
             display: 'flex',
@@ -551,6 +528,19 @@ export function ColorPanel({
             )}
             <button
               type="button"
+              className={`icon-btn ${creatingPalette ? 'active' : ''}`}
+              style={{ width: 28, height: 28 }}
+              aria-label="Create new custom palette"
+              title="New Custom Palette"
+              onClick={() => {
+                setNewPaletteName('');
+                setCreatingPalette((v) => !v);
+              }}
+            >
+              <Plus size={14} />
+            </button>
+            <button
+              type="button"
               className="icon-btn"
               style={{ width: 28, height: 28 }}
               aria-label="Extract palette from image"
@@ -560,6 +550,51 @@ export function ColorPanel({
               <ImagePlus size={14} />
             </button>
           </div>
+
+          {creatingPalette && (
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const pal: SavedPalette = {
+                  id: `pal_${Date.now()}`,
+                  name: newPaletteName.trim() || 'Custom Palette',
+                  colors: [activeColor],
+                };
+                await saveCustomPalette(pal);
+                const custom = await loadCustomPalettes();
+                setAllPalettes([...custom, ...PRESET_PALETTES]);
+                setSelectedPalId(pal.id);
+                onSetPalette(pal.colors);
+                setCreatingPalette(false);
+              }}
+              style={{ display: 'flex', gap: 4, alignItems: 'center' }}
+            >
+              <input
+                autoFocus
+                aria-label="New palette name"
+                placeholder="Palette name..."
+                value={newPaletteName}
+                onChange={(e) => setNewPaletteName(e.target.value)}
+                className="field-input"
+                style={{ flex: 1, minWidth: 0, padding: '4px 7px', fontSize: 11.5 }}
+              />
+              <button
+                type="submit"
+                className="btn primary"
+                style={{ padding: '4px 9px', fontSize: 11.5 }}
+              >
+                Create
+              </button>
+              <button
+                type="button"
+                className="btn"
+                style={{ padding: '4px 7px', fontSize: 11.5 }}
+                onClick={() => setCreatingPalette(false)}
+              >
+                Cancel
+              </button>
+            </form>
+          )}
 
           <input
             aria-label="Hex color code"
@@ -754,7 +789,8 @@ export function ColorPanel({
             </div>
           )}
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

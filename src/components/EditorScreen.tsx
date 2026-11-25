@@ -11,6 +11,7 @@ import {
   EyeOff,
   FlipHorizontal,
   FlipVertical,
+  Grid2x2,
   Grid3x3,
   Home,
   ImagePlus,
@@ -33,11 +34,10 @@ import {
 } from 'lucide-react';
 import {
   DrawAction,
+  applyLayerPixelTransform,
   applyOutline,
   bresenham,
   brushOffsets,
-  computeOpaqueBounds,
-  createNewProject,
   ensureProjectFrames,
   evalDeCasteljau,
   forEachMirrored,
@@ -47,18 +47,13 @@ import {
   shiftArgbLightness,
   wrapCoord,
 } from '../engine/pixelEngine';
-import { PRESET_PALETTES, argbToCss, argbToHex6 } from '../engine/paletteQuantizer';
+import { PRESET_PALETTES, argbToCss } from '../engine/paletteQuantizer';
 import {
-  downloadProjectPng,
   renderCompositeToCanvas,
   renderFrameToCanvas,
   saveProject,
 } from '../engine/storage';
-import { downloadProjectAseprite, parseAsepriteBuffer } from '../engine/asepriteParser';
-import {
-  downloadProjectGif,
-  downloadProjectSpritesheet,
-} from '../engine/gifEncoder';
+import { importProjectFromFile } from '../engine/importer';
 import {
   BrushShape,
   GridRect,
@@ -68,68 +63,29 @@ import {
   PixelProject,
   PixelTool,
 } from '../engine/types';
+import {
+  ShortcutAction,
+  loadShortcuts,
+} from '../hooks/useShortcuts';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 import { ColorPanel } from './ColorPanel';
 import { LayersPanel } from './LayersPanel';
 import { MinimapPanel } from './MinimapPanel';
 import { TimelinePanel } from './TimelinePanel';
-
-type ShortcutAction =
-  | PixelTool
-  | 'brushScrub'
-  | 'brushDec'
-  | 'brushInc'
-  | 'pixelPerfect';
-
-const DEFAULT_SHORTCUTS: Record<ShortcutAction, string> = {
-  pencil: 'b',
-  eraser: 'e',
-  shade: 's',
-  fill: 'g',
-  eyedropper: 'i',
-  line: 'l',
-  rectangle: 'r',
-  circle: 'c',
-  curve: 'u',
-  marquee: 'm',
-  move: 'v',
-  brushScrub: 'f',
-  brushDec: '[',
-  brushInc: ']',
-  pixelPerfect: 'p',
-};
-
-const SHORTCUT_LABELS: Array<[ShortcutAction, string]> = [
-  ['pencil', 'Pencil'],
-  ['eraser', 'Eraser'],
-  ['shade', 'Shade (Lighten / Darken)'],
-  ['fill', 'Fill Bucket'],
-  ['eyedropper', 'Eyedropper'],
-  ['line', 'Line'],
-  ['rectangle', 'Rectangle'],
-  ['circle', 'Circle'],
-  ['curve', 'Curve'],
-  ['marquee', 'Marquee Select'],
-  ['move', 'Move Layer(s)'],
-  ['pixelPerfect', 'Toggle Pixel Perfect'],
-  ['brushScrub', 'Scrub Brush Size (+ Move)'],
-  ['brushDec', 'Decrease Brush Size'],
-  ['brushInc', 'Increase Brush Size'],
-];
-
-function loadShortcuts(): Record<ShortcutAction, string> {
-  try {
-    const raw = localStorage.getItem('artopixel_shortcuts_v1');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
-        return { ...DEFAULT_SHORTCUTS, ...parsed };
-      }
-    }
-  } catch {
-    // ignore
-  }
-  return { ...DEFAULT_SHORTCUTS };
-}
+import { CanvasContextMenu } from './editor/CanvasContextMenu';
+import { ExportModal } from './editor/ExportModal';
+import { LayerPill } from './editor/LayerPill';
+import { ReplaceColorModal } from './editor/ReplaceColorModal';
+import { ResizeCanvasModal } from './editor/ResizeCanvasModal';
+import { SettingsModal } from './editor/SettingsModal';
+import { ShortcutsModal } from './editor/ShortcutsModal';
+import { ToolsDock } from './editor/ToolsDock';
+import {
+  GridMode,
+  HoveredLayerCache,
+  ThemeCache,
+  renderEditorViewport,
+} from './editor/drawViewport';
 
 const ZOOM_STEPS = [
   0.25, 0.5,
@@ -150,11 +106,15 @@ function stepZoom(cur: number, dir: 1 | -1): number {
 export function EditorScreen({
   initialProject,
   theme,
+  uiScale = 1,
+  onChangeUiScale,
   onToggleTheme,
   onBack,
 }: {
   initialProject: PixelProject;
   theme: 'light' | 'dark';
+  uiScale?: number;
+  onChangeUiScale?: (next: number) => void;
   onToggleTheme: () => void;
   onBack: () => void;
 }) {
@@ -166,11 +126,25 @@ export function EditorScreen({
   const [timelineOpen, setTimelineOpen] = useState(true);
   const [timelineHeight, setTimelineHeight] = useState(124);
   const [timelineResizing, setTimelineResizing] = useState(false);
-  const [layersWidth, setLayersWidth] = useState(244);
+  const [layersWidth, setLayersWidth] = useState(276);
   const [layersResizing, setLayersResizing] = useState(false);
   const [dimOtherLayers, setDimOtherLayers] = useState(false);
   const [tool, setTool] = useState<PixelTool>('pencil');
   const [mirror, setMirror] = useState<MirrorMode>('none');
+  const [lastMirrorMode, setLastMirrorMode] = useState<Exclude<MirrorMode, 'none'>>('horizontal');
+  const [mirrorMenuOpen, setMirrorMenuOpen] = useState(false);
+  const mirrorMenuRef = useRef<HTMLDivElement | null>(null);
+  useEscapeKey(() => setMirrorMenuOpen(false), mirrorMenuOpen);
+  useEffect(() => {
+    if (!mirrorMenuOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (mirrorMenuRef.current && !mirrorMenuRef.current.contains(e.target as Node)) {
+        setMirrorMenuOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onDown);
+    return () => window.removeEventListener('pointerdown', onDown);
+  }, [mirrorMenuOpen]);
   const [mirrorPos, setMirrorPos] = useState({
     x: initialProject.width / 2,
     y: initialProject.height / 2,
@@ -183,12 +157,26 @@ export function EditorScreen({
   const [moveAllLayers, setMoveAllLayers] = useState(false);
   const [tiledMode, setTiledMode] = useState(false);
   const [brushShape, setBrushShape] = useState<BrushShape>('round');
-  const [brushSizes, setBrushSizes] = useState<Record<string, number>>({});
+  const [brushSize, setBrushSize] = useState(1);
   const [previewingSize, setPreviewingSize] = useState(false);
   const [activeColor, setActiveColor] = useState<number>(0xff000000);
   const [palette, setPalette] = useState<number[]>(PRESET_PALETTES[0].colors);
   const [showMinimap, setShowMinimap] = useState(true);
-  const [showPixelGrid, setShowPixelGrid] = useState(true);
+  const [gridMode, setGridMode] = useState<GridMode>('tile');
+  const [lastGridMode, setLastGridMode] = useState<Exclude<GridMode, 'off'>>('tile');
+  const [gridMenuOpen, setGridMenuOpen] = useState(false);
+  const gridMenuRef = useRef<HTMLDivElement | null>(null);
+  useEscapeKey(() => setGridMenuOpen(false), gridMenuOpen);
+  useEffect(() => {
+    if (!gridMenuOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (gridMenuRef.current && !gridMenuRef.current.contains(e.target as Node)) {
+        setGridMenuOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onDown);
+    return () => window.removeEventListener('pointerdown', onDown);
+  }, [gridMenuOpen]);
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [layersOpen, setLayersOpen] = useState<boolean>(() => {
     try {
@@ -203,6 +191,7 @@ export function EditorScreen({
   const [hiddenLayerToast, setHiddenLayerToast] = useState(false);
   const [layerFinderToast, setLayerFinderToast] = useState<string | null>(null);
   const [showHelpModal, setShowHelpModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [shortcuts, setShortcuts] = useState<Record<ShortcutAction, string>>(() =>
     loadShortcuts()
   );
@@ -225,16 +214,9 @@ export function EditorScreen({
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [optionsSubOpen, setOptionsSubOpen] = useState(false);
   const [showResizeModal, setShowResizeModal] = useState(false);
-  const [resizeW, setResizeW] = useState(initialProject.width);
-  const [resizeH, setResizeH] = useState(initialProject.height);
-  const [resizeAnchorX, setResizeAnchorX] = useState<'left' | 'center' | 'right'>('center');
-  const [resizeAnchorY, setResizeAnchorY] = useState<'top' | 'center' | 'bottom'>('center');
   const [showReplaceModal, setShowReplaceModal] = useState(false);
   const [replaceFromColor, setReplaceFromColor] = useState<number>(0xff000000);
   const [replaceToColor, setReplaceToColor] = useState<number>(0xff000000);
-  const [replaceAllFrames, setReplaceAllFrames] = useState(false);
-  const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
-  const [lastShape, setLastShape] = useState<'rectangle' | 'circle'>('rectangle');
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState(initialProject.name);
   const [canvasCtxMenu, setCanvasCtxMenu] = useState<{
@@ -243,24 +225,17 @@ export function EditorScreen({
     gx: number;
     gy: number;
   } | null>(null);
-  const [ctxColorSubOpen, setCtxColorSubOpen] = useState(false);
-  const [ctxSelSubOpen, setCtxSelSubOpen] = useState(false);
-  const [layerPillOpen, setLayerPillOpen] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
-  const shapeMenuRef = useRef<HTMLDivElement | null>(null);
-  const canvasCtxMenuRef = useRef<HTMLDivElement | null>(null);
-  const layerPillRef = useRef<HTMLDivElement | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
-  const [exportFormat, setExportFormat] = useState<'png' | 'spritesheet' | 'gif' | 'aseprite'>('png');
-  const [exportScale, setExportScale] = useState(8);
-  const [sheetLayout, setSheetLayout] = useState<'horizontal' | 'grid'>('horizontal');
-  const [sheetCols, setSheetCols] = useState(4);
 
   const [zoom, setZoom] = useState(1);
   const [baseZoom, setBaseZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [revision, setRevision] = useState(0);
   const [selection, setSelection] = useState<GridRect | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importSubOpen, setImportSubOpen] = useState(false);
+  const importModeRef = useRef<'place' | 'open'>('place');
   const [clipboard, setClipboard] = useState<{
     pixels: Uint32Array;
     w: number;
@@ -291,14 +266,7 @@ export function EditorScreen({
   activeFrameIdRef.current =
     project.frames?.[project.activeFrameIndex ?? 0]?.id ?? 'frame-0';
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
-  const themeCacheRef = useRef<{
-    theme: string;
-    cLight: string;
-    cDark: string;
-    accent: string;
-    borderCol: string;
-    patCanvas: HTMLCanvasElement;
-  } | null>(null);
+  const themeCacheRef = useRef<ThemeCache | null>(null);
   const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchRef = useRef<{
     dist: number;
@@ -325,19 +293,25 @@ export function EditorScreen({
   const draggingMirrorRef = useRef<'x' | 'y' | 'xy' | null>(null);
   const hoverPtRef = useRef<[number, number] | null>(null);
   const ctrlHeldRef = useRef(false);
-  const hoveredLayerCacheRef = useRef<{
-    key: string;
-    edges: number[];
-    minX: number;
-    minY: number;
-    name: string;
-  } | null>(null);
+  const hoveredLayerCacheRef = useRef<HoveredLayerCache | null>(null);
   const panStartRef = useRef({ x: 0, y: 0 });
   const floatingSelRef = useRef<{
     pixels: Uint32Array;
     w: number;
     h: number;
     clearedOrig: Map<number, number>;
+    origPixels?: Uint32Array;
+    origW?: number;
+    origH?: number;
+  } | null>(null);
+  const resizingSelRef = useRef<{
+    handle: 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+    startLeft: number;
+    startTop: number;
+    startW: number;
+    startH: number;
+    startClientX: number;
+    startClientY: number;
   } | null>(null);
   const movingSelRef = useRef<{
     startGx: number;
@@ -363,23 +337,29 @@ export function EditorScreen({
   const curveHandleRef = useRef<number | null>(null);
   const [hasCurve, setHasCurve] = useState(false);
 
-  const brushSize = brushSizes[tool] ?? 1;
   const brushSizeRef = useRef(brushSize);
   brushSizeRef.current = brushSize;
   const effectivePerfect = perfectShape || shiftHeld;
+  const didMountAutosaveRef = useRef(false);
+  const latestProjectRef = useRef(project);
+  latestProjectRef.current = project;
 
   useEffect(() => {
+    if (!didMountAutosaveRef.current) {
+      didMountAutosaveRef.current = true;
+      return;
+    }
     setSaveStatus('saving');
     const t = setTimeout(async () => {
       try {
-        await saveProject(project);
+        await saveProject(latestProjectRef.current);
         setSaveStatus('saved');
       } catch {
         setSaveStatus('error');
       }
     }, 400);
     return () => clearTimeout(t);
-  }, [project, revision]);
+  }, [revision, project.name, project.fps, project.referenceDataUrl, project.referenceVisible]);
 
   useEffect(() => {
     const canvas = viewportRef.current;
@@ -660,118 +640,6 @@ export function EditorScreen({
     [pushHistory]
   );
 
-  useEffect(() => {
-    if (!shapeMenuOpen) return;
-    const onDown = (e: PointerEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target?.closest('[data-shape-toggle="true"]')) return;
-      if (shapeMenuRef.current && !shapeMenuRef.current.contains(target)) {
-        setShapeMenuOpen(false);
-      }
-    };
-    window.addEventListener('pointerdown', onDown);
-    return () => window.removeEventListener('pointerdown', onDown);
-  }, [shapeMenuOpen]);
-
-  useEffect(() => {
-    if (!layerPillOpen) return;
-    const onDown = (e: PointerEvent) => {
-      if (layerPillRef.current && !layerPillRef.current.contains(e.target as Node)) {
-        setLayerPillOpen(false);
-      }
-    };
-    window.addEventListener('pointerdown', onDown);
-    return () => window.removeEventListener('pointerdown', onDown);
-  }, [layerPillOpen]);
-
-  useEffect(() => {
-    if (layersOpen) setLayerPillOpen(false);
-  }, [layersOpen]);
-
-  useEffect(() => {
-    if (!canvasCtxMenu) return;
-    const onDown = (e: PointerEvent) => {
-      if (canvasCtxMenuRef.current && !canvasCtxMenuRef.current.contains(e.target as Node)) {
-        setCanvasCtxMenu(null);
-        setCtxColorSubOpen(false);
-        setCtxSelSubOpen(false);
-      }
-    };
-    window.addEventListener('pointerdown', onDown);
-    return () => window.removeEventListener('pointerdown', onDown);
-  }, [canvasCtxMenu]);
-
-  const handleImportFile = useCallback(async (file: File) => {
-    const lower = file.name.toLowerCase();
-    if (lower.endsWith('.ase') || lower.endsWith('.aseprite')) {
-      try {
-        const buf = await file.arrayBuffer();
-        const baseName = file.name.replace(/\.(ase|aseprite)$/i, '') || 'Aseprite Sprite';
-        const { project: imported } = await parseAsepriteBuffer(buf, baseName);
-        const normalized = ensureProjectFrames(imported);
-        await saveProject(normalized);
-        undoRef.current = [];
-        redoRef.current = [];
-        forceHistoryTick((t) => t + 1);
-        setProject(normalized);
-        setSelection(null);
-        floatingSelRef.current = null;
-        setRevision((r) => r + 1);
-      } catch (err) {
-        window.alert(err instanceof Error ? err.message : 'Failed to parse Aseprite file.');
-      }
-      return;
-    }
-
-    if (!file.type.startsWith('image/')) {
-      window.alert('Please choose an image (PNG/JPG/WebP), .ase, or .aseprite file.');
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = async () => {
-      URL.revokeObjectURL(url);
-      const w = img.naturalWidth;
-      const h = img.naturalHeight;
-      if (w < 4 || h < 4 || w > 1024 || h > 1024) {
-        window.alert(`Image must be between 4×4 and 1024×1024 pixels (got ${w}×${h}).`);
-        return;
-      }
-      const off = document.createElement('canvas');
-      off.width = w;
-      off.height = h;
-      const ctx = off.getContext('2d');
-      if (!ctx) return;
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(img, 0, 0);
-      const data = ctx.getImageData(0, 0, w, h).data;
-      const baseName = file.name.replace(/\.[^.]+$/, '') || `Sprite ${w}x${h}`;
-      const proj = ensureProjectFrames(createNewProject(baseName, w, h));
-      const px = proj.layers[0].pixels;
-      for (let i = 0; i < w * h; i++) {
-        const off4 = i * 4;
-        const r = data[off4];
-        const g = data[off4 + 1];
-        const b = data[off4 + 2];
-        const a = data[off4 + 3];
-        px[i] = a === 0 ? 0 : (((a << 24) | (r << 16) | (g << 8) | b) >>> 0);
-      }
-      await saveProject(proj);
-      undoRef.current = [];
-      redoRef.current = [];
-      forceHistoryTick((t) => t + 1);
-      setProject(proj);
-      setSelection(null);
-      floatingSelRef.current = null;
-      setRevision((r) => r + 1);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      window.alert('Could not decode the selected image file.');
-    };
-    img.src = url;
-  }, []);
-
   const handleUndo = useCallback(() => {
     const action = undoRef.current.pop();
     if (!action) return;
@@ -962,427 +830,48 @@ export function EditorScreen({
   }, [project, revision, showMinimap, dimOtherLayers, drawMinimap]);
 
   const drawViewport = useCallback(() => {
-    const canvas = viewportRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
-    if (canvas.width !== Math.round(rect.width * dpr) || canvas.height !== Math.round(rect.height * dpr)) {
-      canvas.width = Math.round(rect.width * dpr);
-      canvas.height = Math.round(rect.height * dpr);
-    }
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.save();
-    ctx.scale(dpr, dpr);
-    ctx.clearRect(0, 0, rect.width, rect.height);
-
-    const w = project.width;
-    const h = project.height;
-    const cw = w * zoom;
-    const ch = h * zoom;
-
-    let cache = themeCacheRef.current;
-    if (!cache || cache.theme !== theme) {
-      const cs = getComputedStyle(document.documentElement);
-      const cLight = cs.getPropertyValue('--checker-light').trim();
-      const cDark = cs.getPropertyValue('--checker-dark').trim();
-      const accent = cs.getPropertyValue('--accent').trim();
-      const borderCol = cs.getPropertyValue('--border').trim();
-
-      const patCanvas = document.createElement('canvas');
-      patCanvas.width = 32;
-      patCanvas.height = 32;
-      const pctx = patCanvas.getContext('2d')!;
-      pctx.fillStyle = cLight;
-      pctx.fillRect(0, 0, 32, 32);
-      pctx.fillStyle = cDark;
-      pctx.fillRect(16, 0, 16, 16);
-      pctx.fillRect(0, 16, 16, 16);
-
-      cache = { theme, cLight, cDark, accent, borderCol, patCanvas };
-      themeCacheRef.current = cache;
-    }
-    const { accent, borderCol, patCanvas } = cache;
-
-    ctx.save();
-    ctx.translate(pan.x, pan.y);
-    ctx.imageSmoothingEnabled = false;
-
-    ctx.save();
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
-    ctx.shadowBlur = 18;
-    ctx.shadowOffsetY = 4;
-    ctx.fillStyle = borderCol;
-    ctx.fillRect(0, 0, cw, ch);
-    ctx.restore();
-
-    const pattern = ctx.createPattern(patCanvas, 'repeat');
-    if (pattern) {
-      ctx.save();
-      ctx.scale(zoom, zoom);
-      ctx.fillStyle = pattern;
-      ctx.fillRect(0, 0, w, h);
-      ctx.restore();
-    }
-
-    if (tiledMode) {
-      ctx.save();
-      ctx.globalAlpha = 0.72;
-      for (let ty = -1; ty <= 1; ty++) {
-        for (let tx = -1; tx <= 1; tx++) {
-          if (tx === 0 && ty === 0) continue;
-          ctx.drawImage(compositeRef.current, tx * cw, ty * ch, cw, ch);
-        }
-      }
-      ctx.restore();
-    }
-
-    if (onionSkin && !isPlaying) {
-      const frames = project.frames ?? [];
-      const fIdx = project.activeFrameIndex ?? 0;
-      ctx.save();
-      ctx.globalAlpha = 0.28;
-      if (fIdx > 0 && frames[fIdx - 1]) {
-        ctx.drawImage(prevOnionRef.current, 0, 0, cw, ch);
-      }
-      if (fIdx + 1 < frames.length && frames[fIdx + 1]) {
-        ctx.drawImage(nextOnionRef.current, 0, 0, cw, ch);
-      }
-      ctx.restore();
-    }
-
-    ctx.drawImage(compositeRef.current, 0, 0, cw, ch);
-
-    previewPixelsRef.current.forEach((argb, idx) => {
-      const px = idx % w;
-      const py = Math.floor(idx / w);
-      ctx.fillStyle = argbToCss(argb);
-      ctx.fillRect(px * zoom, py * zoom, zoom, zoom);
+    renderEditorViewport({
+      canvas: viewportRef.current,
+      project,
+      zoom,
+      pan,
+      tiledMode,
+      gridMode,
+      mirror,
+      mirrorPos,
+      selection,
+      previewingSize,
+      brushSize,
+      brushShape,
+      tool,
+      activeColor,
+      revision,
+      theme,
+      onionSkin,
+      isPlaying,
+      activeFrameId: activeFrameIdRef.current,
+      compositeCanvas: compositeRef.current,
+      prevOnionCanvas: prevOnionRef.current,
+      nextOnionCanvas: nextOnionRef.current,
+      previewPixels: previewPixelsRef.current,
+      curveStart: curveStartRef.current,
+      curveEnd: curveEndRef.current,
+      curveControls: curveControlsRef.current,
+      hoverPt: hoverPtRef.current,
+      isPanning: isPanningRef.current,
+      isScrubbing: Boolean(fScrubRef.current),
+      isDraggingMirror: Boolean(draggingMirrorRef.current),
+      isDrawing: isDrawingRef.current,
+      ctrlHeld: ctrlHeldRef.current,
+      themeCacheRef,
+      hoveredLayerCacheRef,
     });
-
-    if (showPixelGrid && zoom >= 6) {
-      ctx.strokeStyle = 'rgba(128,128,128,0.22)';
-      ctx.lineWidth = 0.6;
-      ctx.beginPath();
-      for (let x = 1; x < w; x++) {
-        ctx.moveTo(x * zoom, 0);
-        ctx.lineTo(x * zoom, ch);
-      }
-      for (let y = 1; y < h; y++) {
-        ctx.moveTo(0, y * zoom);
-        ctx.lineTo(cw, y * zoom);
-      }
-      ctx.stroke();
-    }
-
-    if (mirror !== 'none') {
-      const mx = mirrorPos.x * zoom;
-      const my = mirrorPos.y * zoom;
-      ctx.save();
-      ctx.strokeStyle = accent;
-      ctx.lineWidth = 1.4;
-      ctx.setLineDash([5, 4]);
-      ctx.beginPath();
-      if (mirror === 'horizontal' || mirror === 'quad') {
-        ctx.moveTo(mx, 0);
-        ctx.lineTo(mx, ch);
-      }
-      if (mirror === 'vertical' || mirror === 'quad') {
-        ctx.moveTo(0, my);
-        ctx.lineTo(cw, my);
-      }
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = accent;
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
-      if (mirror === 'horizontal' || mirror === 'quad') {
-        ctx.beginPath();
-        ctx.moveTo(mx, -2);
-        ctx.lineTo(mx - 7, -13);
-        ctx.lineTo(mx + 7, -13);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-      }
-      if (mirror === 'vertical' || mirror === 'quad') {
-        ctx.beginPath();
-        ctx.moveTo(-2, my);
-        ctx.lineTo(-13, my - 7);
-        ctx.lineTo(-13, my + 7);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-      }
-      ctx.restore();
-    }
-
-    if (selection) {
-      ctx.save();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(
-        selection.left * zoom,
-        selection.top * zoom,
-        selection.width * zoom,
-        selection.height * zoom
-      );
-      ctx.strokeStyle = accent;
-      ctx.setLineDash([4, 4]);
-      ctx.strokeRect(
-        selection.left * zoom,
-        selection.top * zoom,
-        selection.width * zoom,
-        selection.height * zoom
-      );
-      ctx.restore();
-    }
-
-    if (curveStartRef.current && curveEndRef.current && curveControlsRef.current.length > 0) {
-      const pts = [
-        curveStartRef.current,
-        ...curveControlsRef.current,
-        curveEndRef.current,
-      ];
-      ctx.save();
-      ctx.strokeStyle = 'rgba(150,160,180,0.85)';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      pts.forEach((pt, i) => {
-        const sx = (pt.x + 0.5) * zoom;
-        const sy = (pt.y + 0.5) * zoom;
-        if (i === 0) ctx.moveTo(sx, sy);
-        else ctx.lineTo(sx, sy);
-      });
-      ctx.stroke();
-
-      pts.forEach((pt, i) => {
-        ctx.beginPath();
-        ctx.arc((pt.x + 0.5) * zoom, (pt.y + 0.5) * zoom, i === 0 || i === pts.length - 1 ? 4 : 5, 0, Math.PI * 2);
-        ctx.fillStyle = i === 0 || i === pts.length - 1 ? '#ffffff' : accent;
-        ctx.fill();
-      });
-      ctx.restore();
-    }
-
-    ctx.strokeStyle = tiledMode ? accent : borderCol;
-    ctx.lineWidth = tiledMode ? 1.6 : 1.2;
-    ctx.strokeRect(0, 0, cw, ch);
-
-    if (previewingSize) {
-      const cx = Math.floor(w / 2);
-      const cy = Math.floor(h / 2);
-      ctx.save();
-      ctx.fillStyle = tool === 'eraser' ? 'rgba(255,255,255,0.28)' : argbToCss(activeColor);
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.2;
-      if (brushSize <= 16) {
-        const offsets = brushOffsets(brushSize, brushShape);
-        for (const [dx, dy] of offsets) {
-          const gx = cx + dx;
-          const gy = cy + dy;
-          if (gx < 0 || gy < 0 || gx >= w || gy >= h) continue;
-          ctx.fillRect(gx * zoom, gy * zoom, zoom, zoom);
-          ctx.strokeRect(gx * zoom, gy * zoom, zoom, zoom);
-        }
-      } else {
-        const startOff = -Math.floor((brushSize - 1) / 2);
-        const rx = (cx + startOff) * zoom;
-        const ry = (cy + startOff) * zoom;
-        const rSize = brushSize * zoom;
-        ctx.globalAlpha = 0.5;
-        if (brushShape === 'round') {
-          ctx.beginPath();
-          ctx.arc(rx + rSize / 2, ry + rSize / 2, rSize / 2, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.globalAlpha = 1;
-          ctx.stroke();
-        } else {
-          ctx.fillRect(rx, ry, rSize, rSize);
-          ctx.globalAlpha = 1;
-          ctx.strokeRect(rx, ry, rSize, rSize);
-        }
-      }
-
-      const startOff = brushSize <= 1 ? 0 : -Math.floor((brushSize - 1) / 2);
-      const rx = (cx + startOff) * zoom;
-      const ry = (cy + startOff) * zoom;
-      const rSize = brushSize * zoom;
-      const label = `${brushSize}px`;
-      ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
-      const tw = ctx.measureText(label).width;
-      const pillW = tw + 12;
-      const pillH = 20;
-      const pillX = rx + rSize / 2 - pillW / 2;
-      const pillY = rSize >= 54 ? ry + rSize / 2 - pillH / 2 : ry - pillH - 6;
-      ctx.fillStyle = 'rgba(20, 23, 31, 0.88)';
-      ctx.beginPath();
-      ctx.roundRect(pillX, pillY, pillW, pillH, 6);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(label, pillX + pillW / 2, pillY + pillH / 2 + 0.5);
-      ctx.restore();
-    }
-
-    if (hoverPtRef.current && !isPanningRef.current && !fScrubRef.current && !draggingMirrorRef.current) {
-      const [hx, hy] = hoverPtRef.current;
-      if (tiledMode || (hx >= 0 && hy >= 0 && hx < w && hy < h)) {
-        const isBrushSized =
-          tool === 'pencil' || tool === 'eraser' || tool === 'shade' || tool === 'line';
-        const size = isBrushSized ? brushSize : 1;
-        const startOff = size <= 1 ? 0 : -Math.floor((size - 1) / 2);
-        ctx.save();
-        if (isBrushSized && size <= 24) {
-          const offsets = brushOffsets(size, brushShape);
-          ctx.fillStyle =
-            tool === 'eraser' ? 'rgba(255,255,255,0.22)' : argbToCss(activeColor);
-          ctx.globalAlpha = tool === 'eraser' ? 1 : 0.45;
-          for (const [dx, dy] of offsets) {
-            const gx = hx + dx;
-            const gy = hy + dy;
-            if (!tiledMode && (gx < 0 || gy < 0 || gx >= w || gy >= h)) continue;
-            ctx.fillRect(gx * zoom, gy * zoom, zoom, zoom);
-          }
-          ctx.globalAlpha = 1;
-        }
-        const rx = (hx + startOff) * zoom;
-        const ry = (hy + startOff) * zoom;
-        const rSize = size * zoom;
-        if (isBrushSized && size > 1 && brushShape === 'round') {
-          if (size > 24) {
-            ctx.fillStyle =
-              tool === 'eraser' ? 'rgba(255,255,255,0.22)' : argbToCss(activeColor);
-            ctx.globalAlpha = 0.35;
-            ctx.beginPath();
-            ctx.arc(rx + rSize / 2, ry + rSize / 2, rSize / 2, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.globalAlpha = 1;
-          }
-          ctx.beginPath();
-          ctx.arc(rx + rSize / 2, ry + rSize / 2, rSize / 2, 0, Math.PI * 2);
-          ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-          ctx.lineWidth = 2;
-          ctx.stroke();
-          ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-        } else {
-          if (size > 24 && isBrushSized) {
-            ctx.fillStyle =
-              tool === 'eraser' ? 'rgba(255,255,255,0.22)' : argbToCss(activeColor);
-            ctx.globalAlpha = 0.35;
-            ctx.fillRect(rx, ry, rSize, rSize);
-            ctx.globalAlpha = 1;
-          }
-          ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-          ctx.lineWidth = 2;
-          ctx.strokeRect(rx, ry, rSize, rSize);
-          ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-          ctx.lineWidth = 1;
-          ctx.strokeRect(rx, ry, rSize, rSize);
-        }
-        ctx.restore();
-      }
-    }
-
-    if (
-      ctrlHeldRef.current &&
-      hoverPtRef.current &&
-      !isPanningRef.current &&
-      !isDrawingRef.current
-    ) {
-      const [hx, hy] = hoverPtRef.current;
-      if (hx >= 0 && hy >= 0 && hx < w && hy < h) {
-        const hIdx = hy * w + hx;
-        let foundLayerIdx = -1;
-        for (let i = project.layers.length - 1; i >= 0; i--) {
-          const lay = project.layers[i];
-          if (!lay.visible) continue;
-          if (lay.groupId) {
-            const grp = project.groups.find((g) => g.id === lay.groupId);
-            if (grp && !grp.visible) continue;
-          }
-          if (((lay.pixels[hIdx] >>> 24) & 0xff) > 0) {
-            foundLayerIdx = i;
-            break;
-          }
-        }
-
-        if (foundLayerIdx >= 0) {
-          const lay = project.layers[foundLayerIdx];
-          const cacheKey = `${activeFrameIdRef.current}:${lay.id}:${revision}`;
-          let cached = hoveredLayerCacheRef.current;
-          if (!cached || cached.key !== cacheKey) {
-            const edges: number[] = [];
-            let minX = w;
-            let minY = h;
-            const px = lay.pixels;
-            for (let py = 0; py < h; py++) {
-              for (let pxx = 0; pxx < w; pxx++) {
-                if (((px[py * w + pxx] >>> 24) & 0xff) === 0) continue;
-                if (pxx < minX) minX = pxx;
-                if (py < minY) minY = py;
-                if (py === 0 || ((px[(py - 1) * w + pxx] >>> 24) & 0xff) === 0) {
-                  edges.push(pxx, py, pxx + 1, py);
-                }
-                if (py === h - 1 || ((px[(py + 1) * w + pxx] >>> 24) & 0xff) === 0) {
-                  edges.push(pxx, py + 1, pxx + 1, py + 1);
-                }
-                if (pxx === 0 || ((px[py * w + (pxx - 1)] >>> 24) & 0xff) === 0) {
-                  edges.push(pxx, py, pxx, py + 1);
-                }
-                if (pxx === w - 1 || ((px[py * w + (pxx + 1)] >>> 24) & 0xff) === 0) {
-                  edges.push(pxx + 1, py, pxx + 1, py + 1);
-                }
-              }
-            }
-            cached = { key: cacheKey, edges, minX, minY, name: lay.name };
-            hoveredLayerCacheRef.current = cached;
-          }
-
-          if (cached.edges.length > 0) {
-            ctx.save();
-            ctx.strokeStyle = '#3b82f6';
-            ctx.lineWidth = 1.75;
-            ctx.beginPath();
-            const eArr = cached.edges;
-            for (let i = 0; i < eArr.length; i += 4) {
-              ctx.moveTo(eArr[i] * zoom, eArr[i + 1] * zoom);
-              ctx.lineTo(eArr[i + 2] * zoom, eArr[i + 3] * zoom);
-            }
-            ctx.stroke();
-
-            // Tiny Figma-style layer name badge above the hovered silhouette
-            ctx.font = '600 11px system-ui, -apple-system, sans-serif';
-            const labelW = ctx.measureText(cached.name).width + 10;
-            const lx = cached.minX * zoom;
-            const ly = cached.minY * zoom - 20;
-            ctx.fillStyle = '#3b82f6';
-            ctx.beginPath();
-            ctx.roundRect(lx, ly, labelW, 17, 4);
-            ctx.fill();
-            ctx.fillStyle = '#ffffff';
-            ctx.fillText(cached.name, lx + 5, ly + 12);
-            ctx.restore();
-          }
-        }
-      }
-    }
-
-    ctx.restore();
-    ctx.restore();
   }, [
     project,
     zoom,
     pan,
     tiledMode,
-    showPixelGrid,
+    gridMode,
     mirror,
     mirrorPos,
     selection,
@@ -1796,6 +1285,127 @@ export function EditorScreen({
     setSelection(null);
   }, [project]);
 
+  const resizeFloatingSelection = useCallback(
+    (newW: number, newH: number, nextLeft?: number, nextTop?: number) => {
+      const fl = floatingSelRef.current;
+      const cur = selectionRef.current;
+      if (!fl || !cur) return;
+      const targetW = Math.max(1, Math.min(1024, Math.round(newW)));
+      const targetH = Math.max(1, Math.min(1024, Math.round(newH)));
+      const origPixels = fl.origPixels ?? new Uint32Array(fl.pixels);
+      const origW = fl.origW ?? fl.w;
+      const origH = fl.origH ?? fl.h;
+      if (!fl.origPixels) {
+        fl.origPixels = origPixels;
+        fl.origW = origW;
+        fl.origH = origH;
+      }
+
+      const scaled = new Uint32Array(targetW * targetH);
+      for (let y = 0; y < targetH; y++) {
+        const sy = Math.min(origH - 1, Math.floor((y * origH) / targetH));
+        for (let x = 0; x < targetW; x++) {
+          const sx = Math.min(origW - 1, Math.floor((x * origW) / targetW));
+          scaled[y * targetW + x] = origPixels[sy * origW + sx];
+        }
+      }
+      fl.pixels = scaled;
+      fl.w = targetW;
+      fl.h = targetH;
+
+      const nextRect: GridRect = {
+        left: nextLeft ?? cur.left,
+        top: nextTop ?? cur.top,
+        width: targetW,
+        height: targetH,
+      };
+      selectionRef.current = nextRect;
+      setSelection(nextRect);
+      syncFloatingPreview(nextRect);
+      setRevision((r) => r + 1);
+    },
+    [syncFloatingPreview]
+  );
+
+  const handleImportFile = useCallback(
+    async (file: File) => {
+      try {
+        const imported = await importProjectFromFile(file);
+        if (importModeRef.current === 'open') {
+          await saveProject(imported);
+          undoRef.current = [];
+          redoRef.current = [];
+          forceHistoryTick((t) => t + 1);
+          setProject(imported);
+          setSelection(null);
+          floatingSelRef.current = null;
+          setRevision((r) => r + 1);
+          return;
+        }
+        if (floatingSelRef.current) {
+          commitFloatingSelection();
+        }
+        const off = document.createElement('canvas');
+        renderCompositeToCanvas(imported, off);
+        const ctx = off.getContext('2d');
+        if (!ctx) {
+          throw new Error('Could not initialize canvas context.');
+        }
+        const imgData = ctx.getImageData(0, 0, imported.width, imported.height).data;
+        const srcW = imported.width;
+        const srcH = imported.height;
+        const buf = new Uint32Array(srcW * srcH);
+        for (let i = 0; i < srcW * srcH; i++) {
+          const si = i * 4;
+          const r = imgData[si];
+          const g = imgData[si + 1];
+          const b = imgData[si + 2];
+          const a = imgData[si + 3];
+          buf[i] = a === 0 ? 0 : (((a << 24) | (r << 16) | (g << 8) | b) >>> 0);
+        }
+
+        const newLayer: PixelLayer = {
+          id: `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          name: imported.name || 'Imported',
+          visible: true,
+          opacity: 1,
+          groupId: null,
+          pixels: new Uint32Array(project.width * project.height),
+        };
+        setProjectSync((p) => ({
+          ...p,
+          layers: [...p.layers, newLayer],
+          activeLayerIndex: p.layers.length,
+        }));
+
+        const placedRect: GridRect = {
+          left: Math.floor((project.width - srcW) / 2),
+          top: Math.floor((project.height - srcH) / 2),
+          width: srcW,
+          height: srcH,
+        };
+        floatingSelRef.current = {
+          pixels: buf,
+          w: srcW,
+          h: srcH,
+          clearedOrig: new Map(),
+          origPixels: new Uint32Array(buf),
+          origW: srcW,
+          origH: srcH,
+        };
+        selectionRef.current = placedRect;
+        setSelection(placedRect);
+        setTool('marquee');
+        syncFloatingPreview(placedRect);
+        setRevision((r) => r + 1);
+        setLayerFinderToast(`Placed "${newLayer.name}" — drag corners to resize, Enter to apply`);
+      } catch (err) {
+        setImportError(err instanceof Error ? err.message : 'Failed to import selected file.');
+      }
+    },
+    [project.width, project.height, commitFloatingSelection, setProjectSync, syncFloatingPreview]
+  );
+
   const deleteSelectionPixels = useCallback(() => {
     const rect = selectionRef.current;
     if (!rect) return;
@@ -2018,7 +1628,6 @@ export function EditorScreen({
           }
           if (((lay.pixels[idx] >>> 24) & 0xff) > 0) {
             setProjectSync((p) => ({ ...p, activeLayerIndex: i }));
-            setLayerFinderToast(`Selected: ${lay.name}`);
             break;
           }
         }
@@ -2041,7 +1650,11 @@ export function EditorScreen({
       return;
     }
 
-    if (!tiledMode && (gx < 0 || gy < 0 || gx >= project.width || gy >= project.height)) {
+    if (
+      !tiledMode &&
+      !(tool === 'marquee' && selection) &&
+      (gx < 0 || gy < 0 || gx >= project.width || gy >= project.height)
+    ) {
       return;
     }
 
@@ -2188,6 +1801,45 @@ export function EditorScreen({
     }
 
     if (tool === 'marquee') {
+      if (selection) {
+        const cRect = viewportRef.current?.getBoundingClientRect();
+        const ptrX = cRect ? e.clientX - cRect.left : 0;
+        const ptrY = cRect ? e.clientY - cRect.top : 0;
+        const sx0 = pan.x + selection.left * zoom;
+        const sy0 = pan.y + selection.top * zoom;
+        const sw = selection.width * zoom;
+        const sh = selection.height * zoom;
+        const handles: Array<{
+          id: 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w';
+          hx: number;
+          hy: number;
+        }> = [
+          { id: 'nw', hx: sx0, hy: sy0 },
+          { id: 'n', hx: sx0 + sw / 2, hy: sy0 },
+          { id: 'ne', hx: sx0 + sw, hy: sy0 },
+          { id: 'e', hx: sx0 + sw, hy: sy0 + sh / 2 },
+          { id: 'se', hx: sx0 + sw, hy: sy0 + sh },
+          { id: 's', hx: sx0 + sw / 2, hy: sy0 + sh },
+          { id: 'sw', hx: sx0, hy: sy0 + sh },
+          { id: 'w', hx: sx0, hy: sy0 + sh / 2 },
+        ];
+        const hitHandle = handles.find(
+          (h) => Math.abs(ptrX - h.hx) <= 9 && Math.abs(ptrY - h.hy) <= 9
+        );
+        if (hitHandle) {
+          liftSelectionToFloating(selection);
+          resizingSelRef.current = {
+            handle: hitHandle.id,
+            startLeft: selection.left,
+            startTop: selection.top,
+            startW: selection.width,
+            startH: selection.height,
+            startClientX: e.clientX,
+            startClientY: e.clientY,
+          };
+          return;
+        }
+      }
       if (
         selection &&
         gx >= selection.left &&
@@ -2261,13 +1913,13 @@ export function EditorScreen({
       }
       const delta = Math.round((e.clientX - fScrubRef.current.startX) / 5);
       const nextSize = Math.max(1, Math.min(128, fScrubRef.current.startSize + delta));
-      setBrushSizes((prev) => ({ ...prev, [tool]: nextSize }));
+      setBrushSize(nextSize);
       return;
     }
     if (fScrubRef.current) {
       const delta = Math.round((e.clientX - fScrubRef.current.startX) / 5);
       const nextSize = Math.max(1, Math.min(128, fScrubRef.current.startSize + delta));
-      setBrushSizes((prev) => ({ ...prev, [tool]: nextSize }));
+      setBrushSize(nextSize);
       return;
     }
     if (isPanningRef.current) {
@@ -2318,6 +1970,37 @@ export function EditorScreen({
         if (layer) shiftBuffer(snap.orig, layer.pixels, dx, dy);
       }
       setRevision((r) => r + 1);
+      return;
+    }
+
+    if (tool === 'marquee' && resizingSelRef.current) {
+      const rs = resizingSelRef.current;
+      const dx = Math.round((e.clientX - rs.startClientX) / zoom);
+      const dy = Math.round((e.clientY - rs.startClientY) / zoom);
+      const hasW = rs.handle.includes('w');
+      const hasE = rs.handle.includes('e');
+      const hasN = rs.handle.includes('n');
+      const hasS = rs.handle.includes('s');
+
+      let newW = rs.startW;
+      let newH = rs.startH;
+      if (hasE) newW = Math.max(1, rs.startW + dx);
+      if (hasW) newW = Math.max(1, rs.startW - dx);
+      if (hasS) newH = Math.max(1, rs.startH + dy);
+      if (hasN) newH = Math.max(1, rs.startH - dy);
+
+      if (e.shiftKey && (hasW || hasE) && (hasN || hasS)) {
+        const ratio = rs.startW / Math.max(1, rs.startH);
+        if (Math.abs(newW - rs.startW) >= Math.abs(newH - rs.startH)) {
+          newH = Math.max(1, Math.round(newW / ratio));
+        } else {
+          newW = Math.max(1, Math.round(newH * ratio));
+        }
+      }
+
+      const newLeft = hasW ? rs.startLeft + (rs.startW - newW) : rs.startLeft;
+      const newTop = hasN ? rs.startTop + (rs.startH - newH) : rs.startTop;
+      resizeFloatingSelection(newW, newH, newLeft, newTop);
       return;
     }
 
@@ -2423,6 +2106,7 @@ export function EditorScreen({
     }
 
     if (tool === 'marquee') {
+      resizingSelRef.current = null;
       movingSelRef.current = null;
       shapeStartRef.current = null;
       return;
@@ -2446,7 +2130,7 @@ export function EditorScreen({
         1,
         Math.min(128, brushSize + (e.deltaY < 0 ? step : -step))
       );
-      setBrushSizes((prev) => ({ ...prev, [tool]: nextSize }));
+      setBrushSize(nextSize);
       return;
     }
     const rect = viewportRef.current!.getBoundingClientRect();
@@ -2526,6 +2210,14 @@ export function EditorScreen({
               : null;
           setPreviewingSize(true);
         }
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        setSaveStatus('saving');
+        saveProject(project)
+          .then(() => setSaveStatus('saved'))
+          .catch(() => setSaveStatus('error'));
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
@@ -2638,11 +2330,11 @@ export function EditorScreen({
         if (matched) onSelectTool(matched);
         if (pressed === sc.brushDec) {
           const step = e.shiftKey ? 8 : 1;
-          setBrushSizes((prev) => ({ ...prev, [tool]: Math.max(1, (prev[tool] ?? 1) - step) }));
+          setBrushSize((s) => Math.max(1, s - step));
         }
         if (pressed === sc.brushInc) {
           const step = e.shiftKey ? 8 : 1;
-          setBrushSizes((prev) => ({ ...prev, [tool]: Math.min(128, (prev[tool] ?? 1) + step) }));
+          setBrushSize((s) => Math.min(128, s + step));
         }
       }
     };
@@ -2692,6 +2384,7 @@ export function EditorScreen({
   }, [
     handleUndo,
     handleRedo,
+    project,
     tool,
     deleteSelectionPixels,
     commitFloatingSelection,
@@ -2729,7 +2422,24 @@ export function EditorScreen({
   const activeToolIcon = (t: PixelTool) => {
     switch (t) {
       case 'pencil':
-        return <Pencil size={18} fill={pixelPerfect ? 'currentColor' : 'none'} />;
+        return pixelPerfect ? (
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="currentColor"
+            stroke="currentColor"
+            strokeWidth="1.2"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M2.5 21.5l1.15-4.7 3.55 3.55-4.7 1.15z" />
+            <path d="M9.1 18.45l9.35-9.35-3.55-3.55-9.35 9.35 3.55 3.55z" />
+            <path d="M20.2 7.35l.8-.8a2.1 2.1 0 0 0-3-3l-.8.8 3 3z" />
+          </svg>
+        ) : (
+          <Pencil size={18} />
+        );
       case 'eraser':
         return <Eraser size={18} />;
       case 'fill':
@@ -2765,6 +2475,7 @@ export function EditorScreen({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <header
+        className="editor-header"
         style={{
           height: 54,
           background: 'var(--surface)',
@@ -2780,7 +2491,7 @@ export function EditorScreen({
         <input
           ref={importInputRef}
           type="file"
-          accept="image/*,.ase,.aseprite"
+          accept="image/*,.apxl,.ase,.aseprite"
           style={{ display: 'none' }}
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -2834,23 +2545,85 @@ export function EditorScreen({
                 >
                   <Home size={14} /> Home
                 </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn"
-                  style={{ border: 'none', justifyContent: 'flex-start' }}
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    importInputRef.current?.click();
-                  }}
+                <div
+                  style={{ position: 'relative' }}
+                  onMouseEnter={() => setImportSubOpen(true)}
+                  onMouseLeave={() => setImportSubOpen(false)}
                 >
-                  <ImagePlus size={14} /> Import Image / .aseprite
-                </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-haspopup="menu"
+                    aria-expanded={importSubOpen}
+                    className="btn"
+                    style={{ width: '100%', border: 'none', justifyContent: 'space-between' }}
+                    onClick={() => setImportSubOpen((v) => !v)}
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <ImagePlus size={14} /> Import
+                    </span>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>▶</span>
+                  </button>
+                  {importSubOpen && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        ...(typeof window !== 'undefined' && window.innerWidth < 400
+                          ? { left: 0, top: '100%', paddingTop: 4 }
+                          : { left: '100%', top: -4, paddingLeft: 4 }),
+                        zIndex: 61,
+                      }}
+                    >
+                      <div
+                        role="menu"
+                        className="floating-card menu-pop"
+                        style={{
+                          width: 176,
+                          padding: 6,
+                          background: 'var(--surface)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 2,
+                          transformOrigin: 'top left',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="btn"
+                          style={{ border: 'none', justifyContent: 'flex-start' }}
+                          onClick={() => {
+                            importModeRef.current = 'place';
+                            setImportSubOpen(false);
+                            setShowMoreMenu(false);
+                            importInputRef.current?.click();
+                          }}
+                        >
+                          Place into Canvas
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="btn"
+                          style={{ border: 'none', justifyContent: 'flex-start' }}
+                          onClick={() => {
+                            importModeRef.current = 'open';
+                            setImportSubOpen(false);
+                            setShowMoreMenu(false);
+                            importInputRef.current?.click();
+                          }}
+                        >
+                          Open as New Project
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <button
                   type="button"
                   role="menuitem"
                   className="btn"
-                  style={{ border: 'none', justifyContent: 'flex-start' }}
+                  style={{ border: 'none', justifyContent: 'space-between' }}
                   onClick={async () => {
                     setShowMoreMenu(false);
                     setSaveStatus('saving');
@@ -2862,7 +2635,10 @@ export function EditorScreen({
                     }
                   }}
                 >
-                  Save
+                  <span>Save</span>
+                  <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
+                    Ctrl+S
+                  </span>
                 </button>
                 <div style={{ height: 1, background: 'var(--border)', margin: '3px 4px' }} />
                 <div
@@ -2879,16 +2655,16 @@ export function EditorScreen({
                     style={{ width: '100%', border: 'none', justifyContent: 'space-between' }}
                     onClick={() => setOptionsSubOpen((v) => !v)}
                   >
-                    <span>Options</span>
+                    <span>Settings</span>
                     <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>▶</span>
                   </button>
                   {optionsSubOpen && (
                     <div
                       style={{
                         position: 'absolute',
-                        top: -4,
-                        left: '100%',
-                        paddingLeft: 4,
+                        ...(typeof window !== 'undefined' && window.innerWidth < 400
+                          ? { left: 0, top: '100%', paddingTop: 4 }
+                          : { left: '100%', top: -4, paddingLeft: 4 }),
                         zIndex: 61,
                       }}
                     >
@@ -2913,10 +2689,23 @@ export function EditorScreen({
                           onClick={() => {
                             setOptionsSubOpen(false);
                             setShowMoreMenu(false);
+                            setShowSettingsModal(true);
+                          }}
+                        >
+                          Interface Scale…
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="btn"
+                          style={{ border: 'none', justifyContent: 'flex-start' }}
+                          onClick={() => {
+                            setOptionsSubOpen(false);
+                            setShowMoreMenu(false);
                             setShowHelpModal(true);
                           }}
                         >
-                          Shortcuts
+                          Shortcuts…
                         </button>
                       </div>
                     </div>
@@ -2929,52 +2718,10 @@ export function EditorScreen({
                   style={{ border: 'none', justifyContent: 'flex-start' }}
                   onClick={() => {
                     setShowMoreMenu(false);
-                    setResizeW(project.width);
-                    setResizeH(project.height);
-                    setResizeAnchorX('center');
-                    setResizeAnchorY('center');
                     setShowResizeModal(true);
                   }}
                 >
                   Resize Canvas…
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn"
-                  style={{ border: 'none', justifyContent: 'flex-start' }}
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    const layer = project.layers[project.activeLayerIndex];
-                    if (!layer) return;
-                    const { oldPixels, newPixels } = applyOutline(
-                      layer.pixels,
-                      project.width,
-                      project.height,
-                      activeColor,
-                      selection
-                    );
-                    if (oldPixels.size > 0) {
-                      pushAction({ layerId: layer.id, oldPixels, newPixels });
-                      setRevision((r) => r + 1);
-                    }
-                  }}
-                >
-                  1px Outline
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn"
-                  style={{ border: 'none', justifyContent: 'flex-start' }}
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    setReplaceFromColor(activeColor);
-                    setReplaceToColor(activeColor);
-                    setShowReplaceModal(true);
-                  }}
-                >
-                  Replace Color…
                 </button>
                 <button
                   type="button"
@@ -2988,95 +2735,6 @@ export function EditorScreen({
                 >
                   {tiledMode ? 'Tiled / Seamless: On' : 'Tiled / Seamless Mode'}
                 </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn"
-                  style={{ border: 'none', justifyContent: 'flex-start' }}
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    const layer = project.layers[project.activeLayerIndex];
-                    const w = project.width, h = project.height;
-                    const copy = new Uint32Array(layer.pixels);
-                    const oldM = new Map<number, number>();
-                    const newM = new Map<number, number>();
-                    for (let y = 0; y < h; y++) {
-                      for (let x = 0; x < w; x++) {
-                        const dst = y * w + (w - 1 - x);
-                        const val = copy[y * w + x];
-                        if (layer.pixels[dst] !== val) {
-                          oldM.set(dst, layer.pixels[dst]);
-                          newM.set(dst, val);
-                          layer.pixels[dst] = val;
-                        }
-                      }
-                    }
-                    pushAction({ layerId: layer.id, oldPixels: oldM, newPixels: newM });
-                    setRevision((r) => r + 1);
-                  }}
-                >
-                  Flip Horizontal
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn"
-                  style={{ border: 'none', justifyContent: 'flex-start' }}
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    const layer = project.layers[project.activeLayerIndex];
-                    const w = project.width, h = project.height;
-                    const copy = new Uint32Array(layer.pixels);
-                    const oldM = new Map<number, number>();
-                    const newM = new Map<number, number>();
-                    for (let y = 0; y < h; y++) {
-                      for (let x = 0; x < w; x++) {
-                        const dst = (h - 1 - y) * w + x;
-                        const val = copy[y * w + x];
-                        if (layer.pixels[dst] !== val) {
-                          oldM.set(dst, layer.pixels[dst]);
-                          newM.set(dst, val);
-                          layer.pixels[dst] = val;
-                        }
-                      }
-                    }
-                    pushAction({ layerId: layer.id, oldPixels: oldM, newPixels: newM });
-                    setRevision((r) => r + 1);
-                  }}
-                >
-                  Flip Vertical
-                </button>
-                {project.width === project.height && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="btn"
-                    style={{ border: 'none', justifyContent: 'flex-start' }}
-                    onClick={() => {
-                      setShowMoreMenu(false);
-                      const layer = project.layers[project.activeLayerIndex];
-                      const n = project.width;
-                      const copy = new Uint32Array(layer.pixels);
-                      const oldM = new Map<number, number>();
-                      const newM = new Map<number, number>();
-                      for (let y = 0; y < n; y++) {
-                        for (let x = 0; x < n; x++) {
-                          const dst = x * n + (n - 1 - y);
-                          const val = copy[y * n + x];
-                          if (layer.pixels[dst] !== val) {
-                            oldM.set(dst, layer.pixels[dst]);
-                            newM.set(dst, val);
-                            layer.pixels[dst] = val;
-                          }
-                        }
-                      }
-                      pushAction({ layerId: layer.id, oldPixels: oldM, newPixels: newM });
-                      setRevision((r) => r + 1);
-                    }}
-                  >
-                    Rotate 90° CW
-                  </button>
-                )}
               </div>
             )}
           </div>
@@ -3170,7 +2828,11 @@ export function EditorScreen({
                   background: 'var(--surface-elevated)',
                   border: '1px solid var(--border)',
                   borderRadius: 5,
-                  padding: '0 5px',
+                  padding: '2px 6px',
+                  minHeight: 24,
+                  minWidth: 48,
+                  textAlign: 'center',
+                  fontVariantNumeric: 'tabular-nums',
                   color: 'var(--text-primary)',
                   font: 'inherit',
                   fontWeight: 700,
@@ -3222,10 +2884,14 @@ export function EditorScreen({
         </div>
 
         {/* Separator between file name and tool controls */}
-        <div style={{ width: 1, height: 26, background: 'var(--border)', flexShrink: 0 }} />
+        <div
+          className="editor-header-divider"
+          style={{ width: 1, height: 26, background: 'var(--border)', flexShrink: 0 }}
+        />
 
         {/* Left-aligned Tool Options + Inline Palette */}
         <div
+          className="editor-header-center"
           style={{
             flex: 1,
             minWidth: 0,
@@ -3267,10 +2933,7 @@ export function EditorScreen({
                   e.preventDefault();
                   const parsed = parseInt(brushSizeDraft, 10);
                   if (!isNaN(parsed)) {
-                    setBrushSizes((prev) => ({
-                      ...prev,
-                      [tool]: Math.max(1, Math.min(128, parsed)),
-                    }));
+                    setBrushSize(Math.max(1, Math.min(128, parsed)));
                   }
                   setEditingBrushSize(false);
                 }}
@@ -3287,10 +2950,7 @@ export function EditorScreen({
                   onBlur={() => {
                     const parsed = parseInt(brushSizeDraft, 10);
                     if (!isNaN(parsed)) {
-                      setBrushSizes((prev) => ({
-                        ...prev,
-                        [tool]: Math.max(1, Math.min(128, parsed)),
-                      }));
+                      setBrushSize(Math.max(1, Math.min(128, parsed)));
                     }
                     setEditingBrushSize(false);
                   }}
@@ -3333,7 +2993,7 @@ export function EditorScreen({
                     if (Math.abs(dx) >= 4) moved = true;
                     if (moved) {
                       const nextSize = Math.max(1, Math.min(128, Math.round(startSize + dx / 6)));
-                      setBrushSizes((prev) => ({ ...prev, [tool]: nextSize }));
+                      setBrushSize(nextSize);
                     }
                   };
 
@@ -3358,29 +3018,275 @@ export function EditorScreen({
             )}
           </div>
 
-          <button
-            type="button"
-            className={`icon-btn ${showPixelGrid ? 'active' : ''}`}
-            aria-label="Toggle Pixel Grid"
-            aria-pressed={showPixelGrid}
-            title="Pixel Grid"
-            onClick={() => setShowPixelGrid((v) => !v)}
-          >
-            <Grid3x3 size={17} />
-          </button>
-          <button
-            type="button"
-            className={`icon-btn ${mirror !== 'none' ? 'active' : ''}`}
-            aria-label={`Mirror: ${mirror}`}
-            aria-pressed={mirror !== 'none'}
-            title={`Mirror: ${mirror}`}
-            onClick={() => {
-              const order: MirrorMode[] = ['none', 'horizontal', 'vertical', 'quad'];
-              setMirror(order[(order.indexOf(mirror) + 1) % order.length]);
+          <div
+            ref={gridMenuRef}
+            style={{
+              position: 'relative',
+              display: 'inline-flex',
+              alignItems: 'center',
+              borderRadius: 10,
+              border: gridMode !== 'off'
+                ? '1px solid color-mix(in srgb, var(--accent) 50%, transparent)'
+                : '1px solid var(--border)',
+              background: gridMode !== 'off' ? 'var(--accent-container)' : 'var(--surface-elevated)',
+              padding: 2,
+              gap: 1,
             }}
           >
-            <FlipHorizontal size={18} />
-          </button>
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                width: 'auto',
+                minWidth: 32,
+                height: 32,
+                padding: '0 6px',
+                gap: 4,
+                border: 'none',
+                background: 'transparent',
+                color: gridMode !== 'off' ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+              aria-label={
+                gridMode !== 'off'
+                  ? `Grid: ${gridMode}. Click to turn off`
+                  : `Turn on ${lastGridMode} grid`
+              }
+              aria-pressed={gridMode !== 'off'}
+              title={
+                gridMode !== 'off'
+                  ? `Grid: ${gridMode} (click to turn off)`
+                  : `Grid: off (click to enable ${lastGridMode})`
+              }
+              onClick={() => {
+                setGridMenuOpen(false);
+                setGridMode((cur) => (cur === 'off' ? lastGridMode : 'off'));
+              }}
+            >
+              {(gridMode === 'tile' || (gridMode === 'off' && lastGridMode === 'tile')) ? (
+                <Grid2x2 size={17} />
+              ) : (
+                <Grid3x3 size={17} />
+              )}
+              {gridMode !== 'off' && (
+                <span className="mono" style={{ fontSize: 10, fontWeight: 700 }}>
+                  {gridMode === 'pixel' ? '1' : gridMode === 'tile' ? '16' : '1+16'}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                width: 22,
+                height: 32,
+                border: 'none',
+                background: 'transparent',
+                color: gridMode !== 'off' ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+              aria-label="Choose grid mode"
+              aria-haspopup="menu"
+              aria-expanded={gridMenuOpen}
+              title="Choose grid mode (Pixel 1×1 / Tile 16×16 / Both)"
+              onClick={() => setGridMenuOpen((v) => !v)}
+            >
+              <ChevronDown size={12} />
+            </button>
+            {gridMenuOpen && (() => {
+              const rect = gridMenuRef.current?.getBoundingClientRect();
+              const menuLeft = rect ? Math.max(8, Math.min(rect.left, window.innerWidth - 180)) : 8;
+              const menuTop = rect ? rect.bottom + 6 : 54;
+              return (
+                <div
+                  role="menu"
+                  aria-label="Grid mode"
+                  className="floating-card menu-pop"
+                  style={{
+                    position: 'fixed',
+                    top: menuTop,
+                    left: menuLeft,
+                    width: 172,
+                    padding: 5,
+                    background: 'var(--surface)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 2,
+                    zIndex: 60,
+                    transformOrigin: 'top left',
+                  }}
+                >
+                  {(
+                    [
+                      ['pixel', 'Pixel (1×1)', <Grid3x3 key="px" size={14} />],
+                      ['tile', 'Tile (16×16)', <Grid2x2 key="tl" size={14} />],
+                      ['both', 'Both (1×1 + 16×16)', <Grid3x3 key="bt" size={14} />],
+                    ] as Array<[Exclude<GridMode, 'off'>, string, React.ReactNode]>
+                  ).map(([mode, label, icon]) => {
+                    const active = gridMode === mode;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={active}
+                        className="btn"
+                        style={{
+                          border: 'none',
+                          justifyContent: 'space-between',
+                          fontSize: 12,
+                          color: active ? 'var(--accent)' : 'var(--text-primary)',
+                          background: active ? 'var(--accent-container)' : 'transparent',
+                        }}
+                        onClick={() => {
+                          setLastGridMode(mode);
+                          setGridMode(mode);
+                          setGridMenuOpen(false);
+                        }}
+                      >
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                          {icon}
+                          {label}
+                        </span>
+                        {active && <Check size={13} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
+          <div
+            ref={mirrorMenuRef}
+            style={{
+              position: 'relative',
+              display: 'inline-flex',
+              alignItems: 'center',
+              borderRadius: 10,
+              border: mirror !== 'none'
+                ? '1px solid color-mix(in srgb, var(--accent) 50%, transparent)'
+                : '1px solid var(--border)',
+              background: mirror !== 'none' ? 'var(--accent-container)' : 'var(--surface-elevated)',
+              padding: 2,
+              gap: 1,
+            }}
+          >
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                width: 'auto',
+                minWidth: 32,
+                height: 32,
+                padding: '0 6px',
+                gap: 4,
+                border: 'none',
+                background: 'transparent',
+                color: mirror !== 'none' ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+              aria-label={
+                mirror !== 'none'
+                  ? `Mirror: ${mirror}. Click to turn off`
+                  : `Turn on ${lastMirrorMode} mirror`
+              }
+              aria-pressed={mirror !== 'none'}
+              title={
+                mirror !== 'none'
+                  ? `Mirror: ${mirror} (click to turn off)`
+                  : `Mirror: off (click to enable ${lastMirrorMode})`
+              }
+              onClick={() => {
+                setMirrorMenuOpen(false);
+                setMirror((cur) => (cur === 'none' ? lastMirrorMode : 'none'));
+              }}
+            >
+              {(mirror === 'vertical' || (mirror === 'none' && lastMirrorMode === 'vertical')) ? (
+                <FlipVertical size={17} />
+              ) : (
+                <FlipHorizontal size={17} />
+              )}
+              {mirror !== 'none' && (
+                <span className="mono" style={{ fontSize: 10, fontWeight: 700 }}>
+                  {mirror === 'horizontal' ? 'H' : mirror === 'vertical' ? 'V' : 'Q'}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              style={{
+                width: 22,
+                height: 32,
+                border: 'none',
+                background: 'transparent',
+                color: mirror !== 'none' ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+              aria-label="Choose mirror axis"
+              aria-haspopup="menu"
+              aria-expanded={mirrorMenuOpen}
+              title="Choose mirror axis (Horizontal / Vertical / Quad)"
+              onClick={() => setMirrorMenuOpen((v) => !v)}
+            >
+              <ChevronDown size={12} />
+            </button>
+            {mirrorMenuOpen && (() => {
+              const rect = mirrorMenuRef.current?.getBoundingClientRect();
+              const menuLeft = rect ? Math.max(8, Math.min(rect.left, window.innerWidth - 168)) : 8;
+              const menuTop = rect ? rect.bottom + 6 : 54;
+              return (
+                <div
+                  role="menu"
+                  aria-label="Mirror mode"
+                  className="floating-card menu-pop"
+                  style={{
+                    position: 'fixed',
+                    top: menuTop,
+                    left: menuLeft,
+                    width: 156,
+                    padding: 5,
+                    background: 'var(--surface)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 2,
+                    zIndex: 60,
+                    transformOrigin: 'top left',
+                  }}
+                >
+                  {(
+                    [
+                      ['horizontal', 'Horizontal (X)'],
+                      ['vertical', 'Vertical (Y)'],
+                      ['quad', 'Quad (X + Y)'],
+                    ] as Array<[Exclude<MirrorMode, 'none'>, string]>
+                  ).map(([mode, label]) => {
+                    const active = mirror === mode;
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={active}
+                        className="btn"
+                        style={{
+                          border: 'none',
+                          justifyContent: 'space-between',
+                          fontSize: 12,
+                          color: active ? 'var(--accent)' : 'var(--text-primary)',
+                          background: active ? 'var(--accent-container)' : 'transparent',
+                        }}
+                        onClick={() => {
+                          setLastMirrorMode(mode);
+                          setMirror(mode);
+                          setMirrorMenuOpen(false);
+                        }}
+                      >
+                        <span>{label}</span>
+                        {active && <Check size={13} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
 
           <ColorPanel
             activeColor={activeColor}
@@ -3454,7 +3360,46 @@ export function EditorScreen({
         </div>
       </header>
 
-      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+      <main aria-label="Canvas workspace" style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <div
+          aria-live="polite"
+          className="mono"
+          style={{
+            position: 'absolute',
+            top: 10,
+            left: 12,
+            zIndex: 15,
+            pointerEvents: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: 11,
+            color: 'var(--text-muted)',
+            background: 'color-mix(in srgb, var(--surface) 75%, transparent)',
+            padding: '3px 8px',
+            borderRadius: 6,
+            border: '1px solid color-mix(in srgb, var(--border) 70%, transparent)',
+          }}
+        >
+          <span style={{ textTransform: 'capitalize', color: 'var(--text-secondary)' }}>
+            {tool}
+          </span>
+          {(tool === 'pencil' || tool === 'shade') && pixelPerfect && (
+            <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
+              • Pixel Perfect
+            </span>
+          )}
+          {mirror !== 'none' && (
+            <span style={{ color: 'var(--text-secondary)' }}>
+              • Mirror: {mirror}
+            </span>
+          )}
+          {tiledMode && (
+            <span style={{ color: 'var(--text-secondary)' }}>
+              • Tiled
+            </span>
+          )}
+        </div>
         <canvas
           ref={viewportRef}
           aria-label="Pixel art canvas"
@@ -3495,8 +3440,6 @@ export function EditorScreen({
           onContextMenu={(e) => {
             e.preventDefault();
             const [gx, gy] = screenToGrid(e.clientX, e.clientY);
-            setCtxColorSubOpen(false);
-            setCtxSelSubOpen(false);
             setCanvasCtxMenu({ x: e.clientX, y: e.clientY, gx, gy });
           }}
           style={{
@@ -3508,570 +3451,262 @@ export function EditorScreen({
           }}
         />
 
-        {!layersOpen && (() => {
-          const activeLayer = project.layers[project.activeLayerIndex];
-          if (!activeLayer) return null;
-          return (
-            <div
-              ref={layerPillRef}
-              style={{
-                position: 'absolute',
-                top: tool === 'move' || hiddenLayerToast ? 52 : 12,
-                left: '50%',
-                transform: 'translateX(-50%)',
-                zIndex: 28,
-              }}
-            >
-              <div
-                className="floating-card"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 4,
-                  padding: '3px 6px 3px 10px',
-                  borderRadius: 999,
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setLayerPillOpen((v) => !v)}
-                  aria-expanded={layerPillOpen}
-                  aria-label={`Active layer: ${activeLayer.name}. Click for opacity and layer switcher`}
-                  title="Click for Opacity & Layer Switcher"
-                  style={{
-                    border: 'none',
-                    background: 'transparent',
-                    color: 'var(--text-primary)',
-                    fontSize: 12,
-                    fontWeight: 600,
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '3px 4px',
-                    cursor: 'pointer',
-                    maxWidth: 180,
-                  }}
-                >
-                  <span
-                    style={{
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {activeLayer.name}
-                  </span>
-                  <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    {Math.round(activeLayer.opacity * 100)}%
-                  </span>
-                  <ChevronDown size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                </button>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  style={{ width: 26, height: 26, borderRadius: '50%' }}
-                  aria-label={activeLayer.visible ? 'Hide active layer' : 'Show active layer'}
-                  title={activeLayer.visible ? 'Hide layer' : 'Show layer'}
-                  onClick={() => {
-                    setProjectSync((p) => {
-                      const next = [...p.layers];
-                      next[p.activeLayerIndex] = {
-                        ...next[p.activeLayerIndex],
-                        visible: !next[p.activeLayerIndex].visible,
-                      };
-                      return { ...p, layers: next };
-                    });
-                    setRevision((r) => r + 1);
-                  }}
-                >
-                  {activeLayer.visible ? <Eye size={13} /> : <EyeOff size={13} />}
-                </button>
-              </div>
-
-              {layerPillOpen && (
-                <div
-                  className="floating-card menu-pop"
-                  style={{
-                    position: 'absolute',
-                    top: 'calc(100% + 6px)',
-                    left: '50%',
-                    transform: 'translateX(-50%)',
-                    width: 224,
-                    padding: 10,
-                    background: 'var(--surface)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 8,
-                    zIndex: 40,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>
-                      Opacity
-                    </span>
-                    <input
-                      type="range"
-                      aria-label="Active layer opacity"
-                      className="color-slider"
-                      min={0}
-                      max={1}
-                      step={0.01}
-                      value={activeLayer.opacity}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value);
-                        setProjectSync((p) => {
-                          const next = [...p.layers];
-                          next[p.activeLayerIndex] = { ...next[p.activeLayerIndex], opacity: val };
-                          return { ...p, layers: next };
-                        });
-                        setRevision((r) => r + 1);
-                      }}
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        height: 10,
-                        background: `linear-gradient(to right, var(--accent) ${Math.round(activeLayer.opacity * 100)}%, var(--surface-elevated) ${Math.round(activeLayer.opacity * 100)}%)`,
-                      }}
-                    />
-                    <span className="mono" style={{ fontSize: 11, minWidth: 32, textAlign: 'right' }}>
-                      {Math.round(activeLayer.opacity * 100)}%
-                    </span>
-                  </div>
-
-                  {project.layers.length > 1 && (
-                    <div
-                      style={{
-                        borderTop: '1px solid var(--border)',
-                        paddingTop: 6,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 2,
-                        maxHeight: 150,
-                        overflowY: 'auto',
-                      }}
-                    >
-                      {[...project.layers].reverse().map((lay, revIdx) => {
-                        const actualIdx = project.layers.length - 1 - revIdx;
-                        const isCur = actualIdx === project.activeLayerIndex;
-                        return (
-                          <button
-                            key={lay.id}
-                            type="button"
-                            className={`btn ${isCur ? 'primary' : ''}`}
-                            style={{
-                              border: 'none',
-                              justifyContent: 'space-between',
-                              padding: '4px 8px',
-                              fontSize: 12,
-                            }}
-                            onClick={() => {
-                              setProjectSync((p) => ({ ...p, activeLayerIndex: actualIdx }));
-                              setLayerPillOpen(false);
-                            }}
-                          >
-                            <span
-                              style={{
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                            >
-                              {lay.name}
-                            </span>
-                            {!lay.visible && <EyeOff size={12} style={{ opacity: 0.65, flexShrink: 0 }} />}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })()}
+        {!layersOpen && (
+          <LayerPill
+            layers={project.layers}
+            activeLayerIndex={project.activeLayerIndex}
+            topOffset={tool === 'move' || hiddenLayerToast ? 52 : 12}
+            dimOtherLayers={dimOtherLayers}
+            onToggleDimOthers={() => setDimOtherLayers((v) => !v)}
+            onToggleVisibility={() => {
+              setProjectSync((p) => {
+                const next = [...p.layers];
+                next[p.activeLayerIndex] = {
+                  ...next[p.activeLayerIndex],
+                  visible: !next[p.activeLayerIndex].visible,
+                };
+                return { ...p, layers: next };
+              });
+              setRevision((r) => r + 1);
+            }}
+            onSetOpacity={(val) => {
+              setProjectSync((p) => {
+                const next = [...p.layers];
+                next[p.activeLayerIndex] = { ...next[p.activeLayerIndex], opacity: val };
+                return { ...p, layers: next };
+              });
+              setRevision((r) => r + 1);
+            }}
+            onSelectLayer={(idx) => setProjectSync((p) => ({ ...p, activeLayerIndex: idx }))}
+          />
+        )}
 
         {canvasCtxMenu && (
-          <div
-            ref={canvasCtxMenuRef}
-            role="menu"
-            className="floating-card menu-pop"
-            style={{
-              position: 'fixed',
-              left: Math.min(canvasCtxMenu.x, window.innerWidth - 190),
-              top: Math.min(canvasCtxMenu.y, window.innerHeight - 140),
-              width: 170,
-              padding: 5,
-              background: 'var(--surface)',
-              zIndex: 70,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 2,
-              transformOrigin: 'top left',
+          <CanvasContextMenu
+            x={canvasCtxMenu.x}
+            y={canvasCtxMenu.y}
+            tool={tool}
+            shadeLighten={shadeLighten}
+            hasSelection={Boolean(selection)}
+            hasClipboard={Boolean(clipboard)}
+            canRotate={project.width === project.height}
+            dimOtherLayers={dimOtherLayers}
+            onClose={() => setCanvasCtxMenu(null)}
+            onToggleDimOthers={() => setDimOtherLayers((v) => !v)}
+            onOutline={() => {
+              const layer = project.layers[project.activeLayerIndex];
+              if (!layer) return;
+              const { oldPixels, newPixels } = applyOutline(
+                layer.pixels,
+                project.width,
+                project.height,
+                activeColor,
+                selection
+              );
+              if (oldPixels.size > 0) {
+                pushAction({ layerId: layer.id, oldPixels, newPixels });
+                setRevision((r) => r + 1);
+              }
             }}
-          >
-            <div
-              style={{ position: 'relative' }}
-              onMouseEnter={() => {
-                setCtxColorSubOpen(true);
-                setCtxSelSubOpen(false);
-              }}
-              onMouseLeave={() => setCtxColorSubOpen(false)}
-            >
-              <button
-                type="button"
-                role="menuitem"
-                aria-haspopup="menu"
-                aria-expanded={ctxColorSubOpen}
-                className="btn"
-                style={{
-                  width: '100%',
-                  border: 'none',
-                  justifyContent: 'space-between',
-                  fontSize: 12.5,
-                }}
-                onClick={() => setCtxColorSubOpen((v) => !v)}
-              >
-                <span>Color</span>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>▶</span>
-              </button>
-
-              {ctxColorSubOpen && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: -4,
-                    left: '100%',
-                    paddingLeft: 4,
-                    zIndex: 71,
-                  }}
-                >
-                  <div
-                    role="menu"
-                    className="floating-card menu-pop"
-                    style={{
-                      width: 164,
-                      padding: 5,
-                      background: 'var(--surface)',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: 2,
-                      transformOrigin: 'top left',
-                    }}
-                  >
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="btn"
-                      style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                      onClick={() => {
-                        const { gx, gy } = canvasCtxMenu;
-                        if (gx >= 0 && gy >= 0 && gx < project.width && gy < project.height) {
-                          const idx = gy * project.width + gx;
-                          for (let i = project.layers.length - 1; i >= 0; i--) {
-                            if (!project.layers[i].visible) continue;
-                            const argb = project.layers[i].pixels[idx];
-                            if (((argb >>> 24) & 0xff) > 0) {
-                              setActiveColor(argb);
-                              break;
-                            }
-                          }
-                        }
-                        setCanvasCtxMenu(null);
-                        setCtxColorSubOpen(false);
-                      }}
-                    >
-                      Eyedropper
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className={`btn ${tool === 'shade' && !shadeLighten ? 'primary' : ''}`}
-                      style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                      onClick={() => {
-                        setShadeLighten(false);
-                        setTool('shade');
-                        setCanvasCtxMenu(null);
-                        setCtxColorSubOpen(false);
-                      }}
-                    >
-                      Darken
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className={`btn ${tool === 'shade' && shadeLighten ? 'primary' : ''}`}
-                      style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                      onClick={() => {
-                        setShadeLighten(true);
-                        setTool('shade');
-                        setCanvasCtxMenu(null);
-                        setCtxColorSubOpen(false);
-                      }}
-                    >
-                      Lighten
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="btn"
-                      style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                      onClick={() => {
-                        const { gx, gy } = canvasCtxMenu;
-                        let picked = activeColor;
-                        if (gx >= 0 && gy >= 0 && gx < project.width && gy < project.height) {
-                          const idx = gy * project.width + gx;
-                          for (let i = project.layers.length - 1; i >= 0; i--) {
-                            if (!project.layers[i].visible) continue;
-                            const argb = project.layers[i].pixels[idx];
-                            if (((argb >>> 24) & 0xff) > 0) {
-                              picked = argb;
-                              break;
-                            }
-                          }
-                        }
-                        setReplaceFromColor(picked);
-                        setReplaceToColor(activeColor);
-                        setShowReplaceModal(true);
-                        setCanvasCtxMenu(null);
-                        setCtxColorSubOpen(false);
-                      }}
-                    >
-                      Replace Color…
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {(selection || clipboard) && (
-              <div
-                style={{ position: 'relative' }}
-                onMouseEnter={() => {
-                  setCtxSelSubOpen(true);
-                  setCtxColorSubOpen(false);
-                }}
-                onMouseLeave={() => setCtxSelSubOpen(false)}
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  aria-haspopup="menu"
-                  aria-expanded={ctxSelSubOpen}
-                  className="btn"
-                  style={{
-                    width: '100%',
-                    border: 'none',
-                    justifyContent: 'space-between',
-                    fontSize: 12.5,
-                  }}
-                  onClick={() => setCtxSelSubOpen((v) => !v)}
-                >
-                  <span>Selection</span>
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>▶</span>
-                </button>
-
-                {ctxSelSubOpen && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: -4,
-                      left: '100%',
-                      paddingLeft: 4,
-                      zIndex: 71,
-                    }}
-                  >
-                    <div
-                      role="menu"
-                      className="floating-card menu-pop"
-                      style={{
-                        width: 164,
-                        padding: 5,
-                        background: 'var(--surface)',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 2,
-                        transformOrigin: 'top left',
-                      }}
-                    >
-                      {selection && (
-                        <>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="btn"
-                            style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                            onClick={() => {
-                              if (floatingSelRef.current) {
-                                setClipboard({
-                                  pixels: new Uint32Array(floatingSelRef.current.pixels),
-                                  w: floatingSelRef.current.w,
-                                  h: floatingSelRef.current.h,
-                                });
-                              } else {
-                                const layer = project.layers[project.activeLayerIndex];
-                                const buf = new Uint32Array(selection.width * selection.height);
-                                for (let sy = 0; sy < selection.height; sy++) {
-                                  for (let sx = 0; sx < selection.width; sx++) {
-                                    const px = selection.left + sx;
-                                    const py = selection.top + sy;
-                                    if (px >= 0 && py >= 0 && px < project.width && py < project.height) {
-                                      buf[sy * selection.width + sx] = layer.pixels[py * project.width + px];
-                                    }
-                                  }
-                                }
-                                setClipboard({ pixels: buf, w: selection.width, h: selection.height });
-                              }
-                              deleteSelectionPixels();
-                              setCanvasCtxMenu(null);
-                              setCtxSelSubOpen(false);
-                            }}
-                          >
-                            Cut
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="btn"
-                            style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                            onClick={() => {
-                              if (floatingSelRef.current) {
-                                setClipboard({
-                                  pixels: new Uint32Array(floatingSelRef.current.pixels),
-                                  w: floatingSelRef.current.w,
-                                  h: floatingSelRef.current.h,
-                                });
-                              } else {
-                                const layer = project.layers[project.activeLayerIndex];
-                                const buf = new Uint32Array(selection.width * selection.height);
-                                for (let sy = 0; sy < selection.height; sy++) {
-                                  for (let sx = 0; sx < selection.width; sx++) {
-                                    const px = selection.left + sx;
-                                    const py = selection.top + sy;
-                                    if (px >= 0 && py >= 0 && px < project.width && py < project.height) {
-                                      buf[sy * selection.width + sx] = layer.pixels[py * project.width + px];
-                                    }
-                                  }
-                                }
-                                setClipboard({ pixels: buf, w: selection.width, h: selection.height });
-                              }
-                              setCanvasCtxMenu(null);
-                              setCtxSelSubOpen(false);
-                            }}
-                          >
-                            Copy
-                          </button>
-                        </>
-                      )}
-                      {clipboard && (
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="btn"
-                          style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                          onClick={() => {
-                            commitFloatingSelection();
-                            const sx0 = Math.max(
-                              0,
-                              Math.min(
-                                project.width - clipboard.w,
-                                Math.floor(canvasCtxMenu.gx - clipboard.w / 2)
-                              )
-                            );
-                            const sy0 = Math.max(
-                              0,
-                              Math.min(
-                                project.height - clipboard.h,
-                                Math.floor(canvasCtxMenu.gy - clipboard.h / 2)
-                              )
-                            );
-                            floatingSelRef.current = {
-                              pixels: new Uint32Array(clipboard.pixels),
-                              w: clipboard.w,
-                              h: clipboard.h,
-                              clearedOrig: new Map(),
-                            };
-                            const nextRect = {
-                              left: sx0,
-                              top: sy0,
-                              width: clipboard.w,
-                              height: clipboard.h,
-                            };
-                            setSelection(nextRect);
-                            syncFloatingPreview(nextRect);
-                            setCanvasCtxMenu(null);
-                            setCtxSelSubOpen(false);
-                          }}
-                        >
-                          Paste
-                        </button>
-                      )}
-                      {selection && (
-                        <>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="btn"
-                            style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                            onClick={() => {
-                              flipSelection('h');
-                              setCanvasCtxMenu(null);
-                              setCtxSelSubOpen(false);
-                            }}
-                          >
-                            Flip Horizontal
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="btn"
-                            style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                            onClick={() => {
-                              flipSelection('v');
-                              setCanvasCtxMenu(null);
-                              setCtxSelSubOpen(false);
-                            }}
-                          >
-                            Flip Vertical
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="btn"
-                            style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                            onClick={() => {
-                              rotateSelection90();
-                              setCanvasCtxMenu(null);
-                              setCtxSelSubOpen(false);
-                            }}
-                          >
-                            Rotate 90°
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            className="btn"
-                            style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-                            onClick={() => {
-                              cancelFloatingSelection();
-                              setCanvasCtxMenu(null);
-                              setCtxSelSubOpen(false);
-                            }}
-                          >
-                            Deselect
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+            onFlipLayerH={() => {
+              const layer = project.layers[project.activeLayerIndex];
+              if (!layer) return;
+              const { oldPixels, newPixels } = applyLayerPixelTransform(
+                layer.pixels,
+                project.width,
+                project.height,
+                (x, y, w) => y * w + (w - 1 - x)
+              );
+              pushAction({ layerId: layer.id, oldPixels, newPixels });
+              setRevision((r) => r + 1);
+            }}
+            onFlipLayerV={() => {
+              const layer = project.layers[project.activeLayerIndex];
+              if (!layer) return;
+              const { oldPixels, newPixels } = applyLayerPixelTransform(
+                layer.pixels,
+                project.width,
+                project.height,
+                (x, y, w, h) => (h - 1 - y) * w + x
+              );
+              pushAction({ layerId: layer.id, oldPixels, newPixels });
+              setRevision((r) => r + 1);
+            }}
+            onRotateLayer90={() => {
+              if (project.width !== project.height) return;
+              const layer = project.layers[project.activeLayerIndex];
+              if (!layer) return;
+              const { oldPixels, newPixels } = applyLayerPixelTransform(
+                layer.pixels,
+                project.width,
+                project.height,
+                (x, y, n) => x * n + (n - 1 - y)
+              );
+              pushAction({ layerId: layer.id, oldPixels, newPixels });
+              setRevision((r) => r + 1);
+            }}
+            onResizeLayer={() => {
+              if (floatingSelRef.current) {
+                commitFloatingSelection();
+              }
+              const layer = project.layers[project.activeLayerIndex];
+              if (!layer) return;
+              let minX = project.width;
+              let minY = project.height;
+              let maxX = -1;
+              let maxY = -1;
+              for (let y = 0; y < project.height; y++) {
+                for (let x = 0; x < project.width; x++) {
+                  const argb = layer.pixels[y * project.width + x];
+                  if (((argb >>> 24) & 0xff) > 0) {
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                  }
+                }
+              }
+              if (maxX < minX || maxY < minY) {
+                setLayerFinderToast('Active layer is empty');
+                return;
+              }
+              const bounds: GridRect = {
+                left: minX,
+                top: minY,
+                width: maxX - minX + 1,
+                height: maxY - minY + 1,
+              };
+              selectionRef.current = bounds;
+              setSelection(bounds);
+              setTool('marquee');
+              liftSelectionToFloating(bounds);
+            }}
+            onEyedropper={() => {
+              const { gx, gy } = canvasCtxMenu;
+              if (gx >= 0 && gy >= 0 && gx < project.width && gy < project.height) {
+                const idx = gy * project.width + gx;
+                for (let i = project.layers.length - 1; i >= 0; i--) {
+                  if (!project.layers[i].visible) continue;
+                  const argb = project.layers[i].pixels[idx];
+                  if (((argb >>> 24) & 0xff) > 0) {
+                    setActiveColor(argb);
+                    break;
+                  }
+                }
+              }
+            }}
+            onShade={(lighten) => {
+              setShadeLighten(lighten);
+              setTool('shade');
+            }}
+            onOpenReplaceColor={() => {
+              const { gx, gy } = canvasCtxMenu;
+              let picked = activeColor;
+              if (gx >= 0 && gy >= 0 && gx < project.width && gy < project.height) {
+                const idx = gy * project.width + gx;
+                for (let i = project.layers.length - 1; i >= 0; i--) {
+                  if (!project.layers[i].visible) continue;
+                  const argb = project.layers[i].pixels[idx];
+                  if (((argb >>> 24) & 0xff) > 0) {
+                    picked = argb;
+                    break;
+                  }
+                }
+              }
+              setReplaceFromColor(picked);
+              setReplaceToColor(activeColor);
+              setShowReplaceModal(true);
+            }}
+            onCut={() => {
+              if (!selection) return;
+              if (floatingSelRef.current) {
+                setClipboard({
+                  pixels: new Uint32Array(floatingSelRef.current.pixels),
+                  w: floatingSelRef.current.w,
+                  h: floatingSelRef.current.h,
+                });
+              } else {
+                const layer = project.layers[project.activeLayerIndex];
+                const buf = new Uint32Array(selection.width * selection.height);
+                for (let sy = 0; sy < selection.height; sy++) {
+                  for (let sx = 0; sx < selection.width; sx++) {
+                    const px = selection.left + sx;
+                    const py = selection.top + sy;
+                    if (px >= 0 && py >= 0 && px < project.width && py < project.height) {
+                      buf[sy * selection.width + sx] = layer.pixels[py * project.width + px];
+                    }
+                  }
+                }
+                setClipboard({ pixels: buf, w: selection.width, h: selection.height });
+              }
+              deleteSelectionPixels();
+            }}
+            onCopy={() => {
+              if (!selection) return;
+              if (floatingSelRef.current) {
+                setClipboard({
+                  pixels: new Uint32Array(floatingSelRef.current.pixels),
+                  w: floatingSelRef.current.w,
+                  h: floatingSelRef.current.h,
+                });
+              } else {
+                const layer = project.layers[project.activeLayerIndex];
+                const buf = new Uint32Array(selection.width * selection.height);
+                for (let sy = 0; sy < selection.height; sy++) {
+                  for (let sx = 0; sx < selection.width; sx++) {
+                    const px = selection.left + sx;
+                    const py = selection.top + sy;
+                    if (px >= 0 && py >= 0 && px < project.width && py < project.height) {
+                      buf[sy * selection.width + sx] = layer.pixels[py * project.width + px];
+                    }
+                  }
+                }
+                setClipboard({ pixels: buf, w: selection.width, h: selection.height });
+              }
+            }}
+            onPaste={() => {
+              if (!clipboard) return;
+              commitFloatingSelection();
+              const sx0 = Math.max(
+                0,
+                Math.min(
+                  project.width - clipboard.w,
+                  Math.floor(canvasCtxMenu.gx - clipboard.w / 2)
+                )
+              );
+              const sy0 = Math.max(
+                0,
+                Math.min(
+                  project.height - clipboard.h,
+                  Math.floor(canvasCtxMenu.gy - clipboard.h / 2)
+                )
+              );
+              floatingSelRef.current = {
+                pixels: new Uint32Array(clipboard.pixels),
+                w: clipboard.w,
+                h: clipboard.h,
+                clearedOrig: new Map(),
+              };
+              const nextRect = {
+                left: sx0,
+                top: sy0,
+                width: clipboard.w,
+                height: clipboard.h,
+              };
+              setSelection(nextRect);
+              syncFloatingPreview(nextRect);
+            }}
+            onFlipH={() => flipSelection('h')}
+            onFlipV={() => flipSelection('v')}
+            onRotate90={rotateSelection90}
+            onDeselect={cancelFloatingSelection}
+          />
         )}
 
         <MinimapPanel
           minimapRef={minimapRef}
           visible={showMinimap}
+          leftInset={typeof window !== 'undefined' && window.innerWidth < 640 ? 68 : 12}
           rightInset={layersOpen ? layersWidth + 12 : 26}
           bottomInset={timelineOpen ? timelineHeight + 12 : 24}
           onToggleVisible={() => setShowMinimap((v) => !v)}
@@ -4114,7 +3749,7 @@ export function EditorScreen({
           }
           return (
             <div
-              className="floating-card"
+              className="floating-card menu-pop"
               style={{
                 position: 'absolute',
                 left: popupLeft,
@@ -4123,6 +3758,7 @@ export function EditorScreen({
                 display: 'flex',
                 gap: 2,
                 zIndex: 30,
+                transformOrigin: 'top center',
               }}
             >
               {hasCurve ? (
@@ -4265,15 +3901,60 @@ export function EditorScreen({
                       <Scissors size={16} />
                     </button>
                     {floatingSelRef.current && (
-                      <button
-                        type="button"
-                        className="icon-btn active"
-                        title="Apply move/transform (Enter)"
-                        aria-label="Apply selection transform"
-                        onClick={commitFloatingSelection}
-                      >
-                        <Check size={16} />
-                      </button>
+                      <>
+                        <div
+                          style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '0 4px',
+                            fontSize: 11,
+                            color: 'var(--text-secondary)',
+                          }}
+                        >
+                          <span>W</span>
+                          <input
+                            type="number"
+                            aria-label="Selection width"
+                            min={1}
+                            max={1024}
+                            value={selection.width}
+                            onChange={(e) => {
+                              const w = parseInt(e.target.value, 10);
+                              if (!isNaN(w) && w >= 1) {
+                                resizeFloatingSelection(w, selection.height);
+                              }
+                            }}
+                            className="field-input mono"
+                            style={{ width: 48, padding: '2px 4px', fontSize: 11 }}
+                          />
+                          <span>×</span>
+                          <input
+                            type="number"
+                            aria-label="Selection height"
+                            min={1}
+                            max={1024}
+                            value={selection.height}
+                            onChange={(e) => {
+                              const h = parseInt(e.target.value, 10);
+                              if (!isNaN(h) && h >= 1) {
+                                resizeFloatingSelection(selection.width, h);
+                              }
+                            }}
+                            className="field-input mono"
+                            style={{ width: 48, padding: '2px 4px', fontSize: 11 }}
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          className="icon-btn active"
+                          title="Apply move/transform (Enter)"
+                          aria-label="Apply selection transform"
+                          onClick={commitFloatingSelection}
+                        >
+                          <Check size={16} />
+                        </button>
+                      </>
                     )}
                     <button
                       type="button"
@@ -4291,226 +3972,23 @@ export function EditorScreen({
           );
         })()}
 
-        <div
-          style={{
-            position: 'absolute',
-            left: 12,
-            bottom: timelineOpen ? timelineHeight + 12 : 24,
-            width: 48,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 8,
-            transition: timelineResizing
-              ? 'none'
-              : 'bottom 220ms cubic-bezier(0.22, 1, 0.36, 1)',
-          }}
-        >
-
-          <div
-            className="floating-card dock-tools"
-            aria-hidden={dockCollapsed}
-            style={{
-              width: 48,
-              padding: dockCollapsed ? 0 : '4px 0',
-              borderWidth: dockCollapsed ? 0 : 1,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 2,
-              maxHeight: dockCollapsed ? 0 : '48vh',
-              opacity: dockCollapsed ? 0 : 1,
-              transform: dockCollapsed ? 'translateY(8px) scale(0.96)' : 'translateY(0) scale(1)',
-              overflowY: dockCollapsed ? 'hidden' : 'auto',
-              pointerEvents: dockCollapsed ? 'none' : 'auto',
-            }}
-          >
-            {(
-              [
-                ['pencil', pixelPerfect ? 'Pencil: Pixel Perfect On (B) — Click again to toggle' : 'Pencil (B) — Click again for Pixel Perfect'],
-                ['eraser', 'Eraser (E)'],
-                ['fill', 'Fill (G)'],
-                ['line', 'Line (L)'],
-                ['curve', 'Curve (U)'],
-                ['marquee', 'Marquee (M)'],
-                [
-                  'move',
-                  moveAllLayers
-                    ? 'Move: All Layers (V) — Click again for Selected'
-                    : 'Move: Selected Layer(s) (V) — Click again for All',
-                ],
-              ] as Array<[PixelTool, string]>
-            ).map(([t, label]) => (
-              <button
-                key={t}
-                type="button"
-                className={`icon-btn ${tool === t ? 'active' : ''}`}
-                aria-label={label}
-                aria-pressed={tool === t}
-                title={label}
-                tabIndex={dockCollapsed ? -1 : 0}
-                onClick={() => {
-                  setShapeMenuOpen(false);
-                  onSelectTool(t);
-                }}
-                style={{ width: 40, height: 38, flexShrink: 0 }}
-              >
-                {activeToolIcon(t)}
-              </button>
-            ))}
-
-            {/* Categorized Shape Tool (Square / Circle + Filled variants) */}
-            <button
-              type="button"
-              data-shape-toggle="true"
-              className={`icon-btn ${tool === 'rectangle' || tool === 'circle' ? 'active' : ''}`}
-              aria-label="Shapes (Square, Circle, Filled)"
-              aria-expanded={shapeMenuOpen}
-              aria-haspopup="menu"
-              title="Shapes (Square / Circle / Filled)"
-              tabIndex={dockCollapsed ? -1 : 0}
-              onClick={() => setShapeMenuOpen((v) => !v)}
-              style={{ width: 40, height: 38, flexShrink: 0, position: 'relative' }}
-            >
-              {(tool === 'circle' || (tool !== 'rectangle' && lastShape === 'circle')) ? (
-                <Circle size={18} fill={shapeFilled ? 'currentColor' : 'none'} />
-              ) : (
-                <Square size={18} fill={shapeFilled ? 'currentColor' : 'none'} />
-              )}
-              <span
-                aria-hidden="true"
-                style={{
-                  position: 'absolute',
-                  right: 3,
-                  bottom: 3,
-                  width: 0,
-                  height: 0,
-                  borderLeft: '4px solid transparent',
-                  borderBottom: '4px solid currentColor',
-                  opacity: 0.7,
-                }}
-              />
-            </button>
-          </div>
-
-          {shapeMenuOpen && !dockCollapsed && (
-            <div
-              ref={shapeMenuRef}
-              role="menu"
-              aria-label="Shape tools"
-              className="floating-card menu-pop"
-              style={{
-                position: 'absolute',
-                left: 56,
-                bottom: 56,
-                padding: 6,
-                background: 'var(--surface)',
-                display: 'grid',
-                gridTemplateColumns: 'repeat(2, 1fr)',
-                gap: 4,
-                zIndex: 45,
-                transformOrigin: 'bottom left',
-              }}
-            >
-              {(
-                [
-                  ['rectangle', false, 'Square Outline (R)'],
-                  ['rectangle', true, 'Square Filled'],
-                  ['circle', false, 'Circle Outline (C)'],
-                  ['circle', true, 'Circle Filled'],
-                ] as const
-              ).map(([shapeTool, filled, label]) => {
-                const isSelected = tool === shapeTool && shapeFilled === filled;
-                return (
-                  <button
-                    key={`${shapeTool}-${String(filled)}`}
-                    type="button"
-                    role="menuitem"
-                    className={`icon-btn ${isSelected ? 'active' : ''}`}
-                    aria-label={label}
-                    title={label}
-                    style={{ width: 38, height: 38 }}
-                    onClick={() => {
-                      setLastShape(shapeTool);
-                      setShapeFilled(filled);
-                      onSelectTool(shapeTool);
-                      setShapeMenuOpen(false);
-                    }}
-                  >
-                    {shapeTool === 'rectangle' ? (
-                      <Square size={18} fill={filled ? 'currentColor' : 'none'} />
-                    ) : (
-                      <Circle size={18} fill={filled ? 'currentColor' : 'none'} />
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
-          <button
-            type="button"
-            className="floating-card"
-            aria-label={dockCollapsed ? 'Expand tools' : 'Collapse tools'}
-            aria-expanded={!dockCollapsed}
-            title={dockCollapsed ? 'Expand tools' : 'Collapse tools'}
-            onClick={() => {
-              setShapeMenuOpen(false);
-              setDockCollapsed((v) => !v);
-            }}
-            style={{
-              width: 48,
-              height: 48,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              cursor: 'pointer',
-              color: dockCollapsed ? 'var(--accent)' : 'var(--text-secondary)',
-              borderColor: dockCollapsed ? 'var(--accent)' : 'var(--border)',
-            }}
-          >
-            {dockCollapsed ? activeToolIcon(tool) : <ChevronDown size={20} />}
-          </button>
-        </div>
-
-        <div
-          className="floating-card"
-          style={{
-            position: 'absolute',
-            left: 70,
-            bottom: timelineOpen ? timelineHeight + 12 : 24,
-            padding: 4,
-            display: 'flex',
-            alignItems: 'center',
-            gap: 2,
-            transition: timelineResizing
-              ? 'none'
-              : 'bottom 220ms cubic-bezier(0.22, 1, 0.36, 1)',
-          }}
-        >
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label="Undo"
-            title="Undo (Ctrl+Z)"
-            disabled={undoRef.current.length === 0}
-            onClick={handleUndo}
-          >
-            <Undo2 size={20} />
-          </button>
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label="Redo"
-            title="Redo (Ctrl+Shift+Z)"
-            disabled={redoRef.current.length === 0}
-            onClick={handleRedo}
-          >
-            <Redo2 size={20} />
-          </button>
-        </div>
+        <ToolsDock
+          tool={tool}
+          pixelPerfect={pixelPerfect}
+          moveAllLayers={moveAllLayers}
+          shapeFilled={shapeFilled}
+          bottomOffset={timelineOpen ? timelineHeight + 12 : 24}
+          disableTransition={timelineResizing}
+          canUndo={undoRef.current.length > 0}
+          canRedo={redoRef.current.length > 0}
+          onSelectTool={onSelectTool}
+          onSetShapeFilled={setShapeFilled}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+        />
         <LayersPanel
           project={project}
+          revision={revision}
           open={layersOpen}
           width={layersWidth}
           isResizing={layersResizing}
@@ -4606,6 +4084,68 @@ export function EditorScreen({
               return { ...p, layers: next, activeLayerIndex: next.length - 1 };
             });
             setRevision((r) => r + 1);
+          }}
+          onCopyLayersToFrame={(indices, targetFrameIndex) => {
+            const frames = project.frames ?? [];
+            const curIdx = project.activeFrameIndex ?? 0;
+            if (frames.length <= 1) return;
+            const sorted = [...new Set(indices)]
+              .filter((idx) => idx >= 0 && idx < project.layers.length)
+              .sort((a, b) => a - b);
+            if (sorted.length === 0) return;
+
+            const prevFrames = [...frames];
+            if (prevFrames[curIdx]) {
+              prevFrames[curIdx] = {
+                ...prevFrames[curIdx],
+                layers: project.layers,
+                groups: project.groups,
+                activeLayerIndex: project.activeLayerIndex,
+              };
+            }
+
+            const now = Date.now();
+            const nextFrames = prevFrames.map((frame, fIdx) => {
+              const shouldCopy =
+                targetFrameIndex === 'all'
+                  ? fIdx !== curIdx
+                  : fIdx === targetFrameIndex;
+              if (!shouldCopy) return frame;
+              const cloned = sorted.map((idx, offset) => {
+                const src = project.layers[idx];
+                return {
+                  ...src,
+                  id: `layer_${now}_${fIdx}_${offset}_${Math.random().toString(36).slice(2, 6)}`,
+                  groupId: null,
+                  pixels: new Uint32Array(src.pixels),
+                };
+              });
+              const mergedLayers = [...frame.layers, ...cloned];
+              return {
+                ...frame,
+                layers: mergedLayers,
+                activeLayerIndex: mergedLayers.length - 1,
+              };
+            });
+
+            pushHistory({
+              kind: 'frames',
+              prevFrames,
+              prevActiveFrameIndex: curIdx,
+              nextFrames,
+              nextActiveFrameIndex: curIdx,
+            });
+            setProject((prev) => ({
+              ...prev,
+              frames: nextFrames,
+            }));
+            setRevision((r) => r + 1);
+            const label = sorted.length === 1 ? project.layers[sorted[0]].name : `${sorted.length} layers`;
+            setLayerFinderToast(
+              targetFrameIndex === 'all'
+                ? `Copied ${label} to all other frames`
+                : `Copied ${label} to Frame ${targetFrameIndex + 1}`
+            );
           }}
           onMergeLayers={(indices) => {
             setProjectSync((p) => {
@@ -4766,69 +4306,119 @@ export function EditorScreen({
           </div>
         )}
 
-        {layerFinderToast && (
+        {importError && (
           <div
-            role="status"
-            className="floating-card"
-            style={{
-              position: 'absolute',
-              top: 52,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              padding: '5px 12px',
-              fontSize: 12,
-              fontWeight: 600,
-              color: 'var(--text-primary)',
-              zIndex: 45,
-              pointerEvents: 'none',
-            }}
-          >
-            {layerFinderToast}
-          </div>
-        )}
-
-        {hiddenLayerToast && (
-          <div
-            role="status"
-            className="floating-card"
             style={{
               position: 'absolute',
               top: 12,
               left: '50%',
               transform: 'translateX(-50%)',
-              padding: '6px 12px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              fontSize: 12,
+              zIndex: 55,
+              maxWidth: 'min(420px, calc(100vw - 24px))',
+            }}
+          >
+            <div
+              role="alert"
+              className="floating-card menu-pop"
+              style={{
+                padding: '6px 10px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 12,
+                color: 'var(--danger)',
+                borderColor: 'var(--danger)',
+              }}
+            >
+              <span>{importError}</span>
+              <button
+                type="button"
+                className="icon-btn"
+                style={{ width: 24, height: 24, flexShrink: 0 }}
+                aria-label="Dismiss import error"
+                onClick={() => setImportError(null)}
+              >
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {layerFinderToast && (
+          <div
+            style={{
+              position: 'absolute',
+              top: !layersOpen && (tool === 'move' || hiddenLayerToast) ? 94 : 52,
+              left: '50%',
+              transform: 'translateX(-50%)',
+              zIndex: 45,
+              pointerEvents: 'none',
+            }}
+          >
+            <div
+              role="status"
+              className="floating-card menu-pop"
+              style={{
+                padding: '5px 12px',
+                fontSize: 12,
+                fontWeight: 600,
+                color: 'var(--text-primary)',
+                transformOrigin: 'top center',
+              }}
+            >
+              {layerFinderToast}
+            </div>
+          </div>
+        )}
+
+        {hiddenLayerToast && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 12,
+              left: '50%',
+              transform: 'translateX(-50%)',
               zIndex: 45,
             }}
           >
-            <span>Active layer is hidden</span>
-            <button
-              type="button"
-              className="btn primary"
-              style={{ padding: '3px 8px', fontSize: 11 }}
-              onClick={() => {
-                setProject((p) => {
-                  const next = [...p.layers];
-                  const cur = next[p.activeLayerIndex];
-                  if (cur) next[p.activeLayerIndex] = { ...cur, visible: true };
-                  return { ...p, layers: next };
-                });
-                setHiddenLayerToast(false);
-                setRevision((r) => r + 1);
+            <div
+              role="status"
+              className="floating-card menu-pop"
+              style={{
+                padding: '6px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 12,
+                transformOrigin: 'top center',
               }}
             >
-              Show Layer
-            </button>
+              <span>Active layer is hidden</span>
+              <button
+                type="button"
+                className="btn primary"
+                style={{ padding: '3px 8px', fontSize: 11 }}
+                onClick={() => {
+                  setProjectSync((p) => {
+                    const next = [...p.layers];
+                    const cur = next[p.activeLayerIndex];
+                    if (cur) next[p.activeLayerIndex] = { ...cur, visible: true };
+                    return { ...p, layers: next };
+                  });
+                  setHiddenLayerToast(false);
+                  setRevision((r) => r + 1);
+                }}
+              >
+                Show Layer
+              </button>
+            </div>
           </div>
         )}
 
         {deletedLayerToast && (
           <div
             role="status"
-            className="floating-card"
+            className="floating-card menu-pop-up"
             style={{
               position: 'absolute',
               bottom: timelineOpen ? timelineHeight + 12 : 24,
@@ -4872,762 +4462,108 @@ export function EditorScreen({
             </button>
           </div>
         )}
-      </div>
+      </main>
 
       {showHelpModal && (
-        <div className="modal-backdrop" onClick={attemptCloseShortcuts}>
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="help-modal-title"
-            className="floating-card"
-            style={{
-              width: 'min(420px, calc(100vw - 24px))',
-              maxHeight: '85vh',
-              background: 'var(--surface)',
-              display: 'flex',
-              flexDirection: 'column',
-              overflow: 'hidden',
-              position: 'relative',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Fixed top header */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '14px 16px 10px',
-                borderBottom: '1px solid var(--border)',
-                flexShrink: 0,
-              }}
-            >
-              <h3 id="help-modal-title" style={{ margin: 0, fontSize: 15 }}>
-                Shortcuts & Studio Tips
-              </h3>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn"
-                  style={{ fontSize: 11.5, padding: '4px 10px' }}
-                  onClick={() => {
-                    setDraftShortcuts({ ...DEFAULT_SHORTCUTS });
-                    setListeningAction(null);
-                  }}
-                >
-                  Reset Defaults
-                </button>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  style={{ width: 30, height: 30 }}
-                  aria-label="Close shortcuts"
-                  title="Close"
-                  onClick={attemptCloseShortcuts}
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-
-            {/* Scrollable shortcuts list */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
-              <p style={{ margin: '0 0 10px', fontSize: 12, color: 'var(--text-secondary)' }}>
-                Click any shortcut key below, then press a new key to rebind it.
-              </p>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, fontSize: 12.5 }}>
-                {SHORTCUT_LABELS.map(([action, label]) => {
-                  const isListening = listeningAction === action;
-                  const keyText = isListening
-                    ? 'Press key…'
-                    : draftShortcuts[action] === ' '
-                      ? 'Space'
-                      : draftShortcuts[action] === 'alt'
-                        ? 'Alt'
-                        : draftShortcuts[action].toUpperCase();
-                  return (
-                    <div
-                      key={action}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 10,
-                        padding: '4px 0',
-                        borderBottom: '1px solid var(--border)',
-                      }}
-                    >
-                      <span style={{ color: 'var(--text-primary)' }}>{label}</span>
-                      <button
-                        type="button"
-                        className={`btn mono ${isListening ? 'primary' : ''}`}
-                        style={{ minWidth: 56, justifyContent: 'center', padding: '4px 10px', fontSize: 12 }}
-                        onClick={() => setListeningAction(isListening ? null : action)}
-                      >
-                        {keyText}
-                      </button>
-                    </div>
-                  );
-                })}
-                {[
-                  ['Space + Drag / Pinch', 'Pan or zoom canvas'],
-                  ['Ctrl + + / - / 0', 'Zoom in / out / reset to 100%'],
-                  ['Ctrl+Z / Ctrl+Shift+Z', 'Undo / Redo'],
-                  ['Ctrl+G / Ctrl+Shift+G', 'Group / Ungroup selected layers'],
-                  ['Arrows / Enter / Del', 'Nudge, apply, or delete selection'],
-                  ['Ctrl + Left-Click', 'Auto-select layer at pixel'],
-                  ['Right-click canvas', 'Context menu (Color > Darken / Lighten)'],
-                ].map(([k, desc]) => (
-                  <div
-                    key={k}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      gap: 10,
-                      padding: '4px 0',
-                      borderBottom: '1px solid var(--border)',
-                    }}
-                  >
-                    <span className="mono" style={{ fontWeight: 700, color: 'var(--text-secondary)', fontSize: 11.5 }}>
-                      {k}
-                    </span>
-                    <span style={{ color: 'var(--text-secondary)', textAlign: 'right', fontSize: 12 }}>
-                      {desc}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Fixed bottom footer */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 8,
-                padding: '10px 16px 14px',
-                borderTop: '1px solid var(--border)',
-                background: 'var(--surface)',
-                flexShrink: 0,
-              }}
-            >
-              <span style={{ fontSize: 11.5, color: hasUnsavedShortcuts ? 'var(--accent)' : 'var(--text-muted)' }}>
-                {hasUnsavedShortcuts ? 'Unsaved changes' : 'All changes applied'}
-              </span>
-              <button
-                type="button"
-                className="btn primary"
-                disabled={!hasUnsavedShortcuts}
-                onClick={applyDraftShortcuts}
-              >
-                Apply
-              </button>
-            </div>
-
-            {/* Unsaved changes prompt */}
-            {confirmDiscardShortcuts && (
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  background: 'var(--backdrop)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  padding: 16,
-                  zIndex: 10,
-                }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div
-                  className="floating-card"
-                  style={{
-                    width: 'min(300px, 100%)',
-                    padding: 16,
-                    background: 'var(--surface)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 12,
-                  }}
-                >
-                  <div style={{ fontWeight: 700, fontSize: 14 }}>Save shortcut changes?</div>
-                  <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-                    You have unapplied shortcut changes. Do you want to save them before closing?
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => setConfirmDiscardShortcuts(false)}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => {
-                        setConfirmDiscardShortcuts(false);
-                        setShowHelpModal(false);
-                      }}
-                    >
-                      Discard
-                    </button>
-                    <button
-                      type="button"
-                      className="btn primary"
-                      onClick={applyDraftShortcuts}
-                    >
-                      Save
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+        <ShortcutsModal
+          shortcuts={shortcuts}
+          onApply={(next) => {
+            setShortcuts(next);
+            try {
+              localStorage.setItem('artopixel_shortcuts_v1', JSON.stringify(next));
+            } catch {
+              // ignore
+            }
+          }}
+          onClose={() => setShowHelpModal(false)}
+        />
       )}
 
       {showResizeModal && (
-        <div className="modal-backdrop" onClick={() => setShowResizeModal(false)}>
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="resize-modal-title"
-            className="floating-card"
-            style={{
-              width: 'min(360px, calc(100vw - 24px))',
-              padding: 18,
-              background: 'var(--surface)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 12,
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h3 id="resize-modal-title" style={{ margin: 0, fontSize: 15 }}>
-                Resize Canvas
-              </h3>
-              <button
-                type="button"
-                className="icon-btn"
-                style={{ width: 28, height: 28 }}
-                aria-label="Close resize dialog"
-                onClick={() => setShowResizeModal(false)}
-              >
-                <X size={15} />
-              </button>
-            </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <label style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
-                Width (4–1024)
-                <input
-                  type="number"
-                  min={4}
-                  max={1024}
-                  value={resizeW}
-                  onChange={(e) => setResizeW(Math.max(4, Math.min(1024, Number(e.target.value) || 4)))}
-                  className="mono"
-                  style={{
-                    width: '100%',
-                    marginTop: 4,
-                    padding: '6px 8px',
-                    borderRadius: 7,
-                    border: '1px solid var(--border)',
-                    background: 'var(--surface-elevated)',
-                    color: 'var(--text-primary)',
-                  }}
-                />
-              </label>
-              <label style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
-                Height (4–1024)
-                <input
-                  type="number"
-                  min={4}
-                  max={1024}
-                  value={resizeH}
-                  onChange={(e) => setResizeH(Math.max(4, Math.min(1024, Number(e.target.value) || 4)))}
-                  className="mono"
-                  style={{
-                    width: '100%',
-                    marginTop: 4,
-                    padding: '6px 8px',
-                    borderRadius: 7,
-                    border: '1px solid var(--border)',
-                    background: 'var(--surface-elevated)',
-                    color: 'var(--text-primary)',
-                  }}
-                />
-              </label>
-            </div>
-            <div>
-              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 6 }}>
-                Anchor
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 34px)', gap: 4 }}>
-                {(['top', 'center', 'bottom'] as const).map((ay) =>
-                  (['left', 'center', 'right'] as const).map((ax) => {
-                    const active = resizeAnchorX === ax && resizeAnchorY === ay;
-                    return (
-                      <button
-                        key={`${ay}-${ax}`}
-                        type="button"
-                        className={`icon-btn ${active ? 'active' : ''}`}
-                        style={{ width: 34, height: 34, fontSize: 11 }}
-                        aria-label={`Anchor ${ay} ${ax}`}
-                        onClick={() => {
-                          setResizeAnchorX(ax);
-                          setResizeAnchorY(ay);
-                        }}
-                      >
-                        •
-                      </button>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 4 }}>
-              <button
-                type="button"
-                className="btn"
-                style={{ fontSize: 12 }}
-                onClick={() => {
-                  const bounds = computeOpaqueBounds(project);
-                  if (!bounds) return;
-                  undoRef.current = [];
-                  redoRef.current = [];
-                  forceHistoryTick((t) => t + 1);
-                  setProject((p) => resizeProjectCanvas(p, bounds.width, bounds.height, -bounds.left, -bounds.top));
-                  setSelection(null);
-                  floatingSelRef.current = null;
-                  setRevision((r) => r + 1);
-                  setShowResizeModal(false);
-                }}
-              >
-                Trim Empty
-              </button>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <button type="button" className="btn" onClick={() => setShowResizeModal(false)}>
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn primary"
-                  onClick={() => {
-                    const dx =
-                      resizeAnchorX === 'left'
-                        ? 0
-                        : resizeAnchorX === 'center'
-                          ? Math.floor((resizeW - project.width) / 2)
-                          : resizeW - project.width;
-                    const dy =
-                      resizeAnchorY === 'top'
-                        ? 0
-                        : resizeAnchorY === 'center'
-                          ? Math.floor((resizeH - project.height) / 2)
-                          : resizeH - project.height;
-                    undoRef.current = [];
-                    redoRef.current = [];
-                    forceHistoryTick((t) => t + 1);
-                    setProject((p) => resizeProjectCanvas(p, resizeW, resizeH, dx, dy));
-                    setSelection(null);
-                    floatingSelRef.current = null;
-                    setRevision((r) => r + 1);
-                    setShowResizeModal(false);
-                  }}
-                >
-                  Apply
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ResizeCanvasModal
+          project={project}
+          onApplyResize={(newW, newH, dx, dy) => {
+            undoRef.current = [];
+            redoRef.current = [];
+            forceHistoryTick((t) => t + 1);
+            setProject((p) => resizeProjectCanvas(p, newW, newH, dx, dy));
+            setSelection(null);
+            floatingSelRef.current = null;
+            setRevision((r) => r + 1);
+          }}
+          onClose={() => setShowResizeModal(false)}
+        />
       )}
 
       {showReplaceModal && (
-        <div className="modal-backdrop" onClick={() => setShowReplaceModal(false)}>
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="replace-modal-title"
-            className="floating-card"
-            style={{
-              width: 'min(360px, calc(100vw - 24px))',
-              padding: 18,
-              background: 'var(--surface)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 12,
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <h3 id="replace-modal-title" style={{ margin: 0, fontSize: 15 }}>
-                Replace Color
-              </h3>
-              <button
-                type="button"
-                className="icon-btn"
-                style={{ width: 28, height: 28 }}
-                aria-label="Close replace color dialog"
-                onClick={() => setShowReplaceModal(false)}
-              >
-                <X size={15} />
-              </button>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <label style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
-                From
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                  <input
-                    type="color"
-                    value={`#${argbToHex6(replaceFromColor)}`}
-                    onChange={(e) => {
-                      const rgb = parseInt(e.target.value.slice(1), 16);
-                      setReplaceFromColor((0xff000000 | rgb) >>> 0);
-                    }}
-                    style={{ width: 32, height: 28, border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
-                  />
-                  <span className="mono" style={{ fontSize: 12, color: 'var(--text-primary)' }}>
-                    #{argbToHex6(replaceFromColor)}
-                  </span>
-                </div>
-              </label>
-              <label style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
-                To
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                  <input
-                    type="color"
-                    value={`#${argbToHex6(replaceToColor)}`}
-                    onChange={(e) => {
-                      const rgb = parseInt(e.target.value.slice(1), 16);
-                      setReplaceToColor((0xff000000 | rgb) >>> 0);
-                    }}
-                    style={{ width: 32, height: 28, border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
-                  />
-                  <span className="mono" style={{ fontSize: 12, color: 'var(--text-primary)' }}>
-                    #{argbToHex6(replaceToColor)}
-                  </span>
-                </div>
-              </label>
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-              {palette.slice(0, 16).map((c, idx) => (
-                <button
-                  key={`${c}-${idx}`}
-                  type="button"
-                  title={`Set To color #${argbToHex6(c)}`}
-                  onClick={() => setReplaceToColor(c)}
-                  style={{
-                    width: 20,
-                    height: 20,
-                    borderRadius: 4,
-                    background: argbToCss(c),
-                    border: c === replaceToColor ? '2px solid var(--accent)' : '1px solid var(--border)',
-                    cursor: 'pointer',
-                    padding: 0,
-                  }}
-                />
-              ))}
-            </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={replaceAllFrames}
-                onChange={(e) => setReplaceAllFrames(e.target.checked)}
-              />
-              <span>Apply to all frames (active layer index)</span>
-            </label>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6 }}>
-              <button type="button" className="btn" onClick={() => setShowReplaceModal(false)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn primary"
-                onClick={() => {
-                  if (replaceAllFrames && project.frames && project.frames.length > 1) {
-                    const curFrameIdx = project.activeFrameIndex ?? 0;
-                    project.frames.forEach((f, fIdx) => {
-                      const targetLayer =
-                        fIdx === curFrameIdx
-                          ? project.layers[project.activeLayerIndex]
-                          : f.layers[Math.min(project.activeLayerIndex, f.layers.length - 1)];
-                      if (targetLayer) {
-                        const { oldPixels, newPixels } = replaceColorInBuffer(
-                          targetLayer.pixels,
-                          project.width,
-                          project.height,
-                          replaceFromColor,
-                          replaceToColor,
-                          selection
-                        );
-                        if (oldPixels.size > 0) {
-                          pushAction({
-                            frameId: f.id,
-                            layerId: targetLayer.id,
-                            oldPixels,
-                            newPixels,
-                          });
-                        }
-                      }
+        <ReplaceColorModal
+          initialFromColor={replaceFromColor}
+          initialToColor={replaceToColor}
+          palette={palette}
+          onApply={(fromCol, toCol, allFrames) => {
+            if (allFrames && project.frames && project.frames.length > 1) {
+              const curFrameIdx = project.activeFrameIndex ?? 0;
+              project.frames.forEach((f, fIdx) => {
+                const targetLayer =
+                  fIdx === curFrameIdx
+                    ? project.layers[project.activeLayerIndex]
+                    : f.layers[Math.min(project.activeLayerIndex, f.layers.length - 1)];
+                if (targetLayer) {
+                  const { oldPixels, newPixels } = replaceColorInBuffer(
+                    targetLayer.pixels,
+                    project.width,
+                    project.height,
+                    fromCol,
+                    toCol,
+                    selection
+                  );
+                  if (oldPixels.size > 0) {
+                    pushAction({
+                      frameId: f.id,
+                      layerId: targetLayer.id,
+                      oldPixels,
+                      newPixels,
                     });
-                    setRevision((r) => r + 1);
-                  } else {
-                    const layer = project.layers[project.activeLayerIndex];
-                    if (layer) {
-                      const { oldPixels, newPixels } = replaceColorInBuffer(
-                        layer.pixels,
-                        project.width,
-                        project.height,
-                        replaceFromColor,
-                        replaceToColor,
-                        selection
-                      );
-                      if (oldPixels.size > 0) {
-                        pushAction({ layerId: layer.id, oldPixels, newPixels });
-                        setRevision((r) => r + 1);
-                      }
-                    }
                   }
-                  setShowReplaceModal(false);
-                }}
-              >
-                Replace
-              </button>
-            </div>
-          </div>
-        </div>
+                }
+              });
+              setRevision((r) => r + 1);
+            } else {
+              const layer = project.layers[project.activeLayerIndex];
+              if (layer) {
+                const { oldPixels, newPixels } = replaceColorInBuffer(
+                  layer.pixels,
+                  project.width,
+                  project.height,
+                  fromCol,
+                  toCol,
+                  selection
+                );
+                if (oldPixels.size > 0) {
+                  pushAction({ layerId: layer.id, oldPixels, newPixels });
+                  setRevision((r) => r + 1);
+                }
+              }
+            }
+          }}
+          onClose={() => setShowReplaceModal(false)}
+        />
       )}
 
       {showExportModal && (
-        <div
-          className="modal-backdrop"
-          onClick={() => setShowExportModal(false)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="export-modal-title"
-            className="floating-card"
-            style={{
-              width: 'min(380px, calc(100vw - 24px))',
-              padding: 18,
-              background: 'var(--surface)',
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 id="export-modal-title" style={{ margin: '0 0 14px', fontSize: 15 }}>
-              Export Sprite
-            </h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  fontSize: 12.5,
-                  color: 'var(--text-secondary)',
-                }}
-              >
-                <span>Format</span>
-                <select
-                  aria-label="Export format"
-                  value={exportFormat}
-                  onChange={(e) =>
-                    setExportFormat(
-                      e.target.value as 'png' | 'spritesheet' | 'gif' | 'aseprite'
-                    )
-                  }
-                  style={{
-                    width: 210,
-                    padding: '6px 8px',
-                    borderRadius: 7,
-                    border: '1px solid var(--border)',
-                    background: 'var(--surface-elevated)',
-                    color: 'var(--text-primary)',
-                    fontSize: 12.5,
-                  }}
-                >
-                  <option value="png">PNG Image</option>
-                  <option value="spritesheet">Spritesheet (PNG)</option>
-                  <option value="gif">Animated GIF</option>
-                  <option value="aseprite">Aseprite (.aseprite)</option>
-                </select>
-              </label>
+        <ExportModal
+          project={project}
+          palette={palette}
+          onClose={() => setShowExportModal(false)}
+        />
+      )}
 
-              {exportFormat !== 'aseprite' && (
-                <label
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 12,
-                    fontSize: 12.5,
-                    color: 'var(--text-secondary)',
-                  }}
-                >
-                  <span>Size</span>
-                  <select
-                    aria-label="Export scale"
-                    value={exportScale}
-                    onChange={(e) => setExportScale(Number(e.target.value))}
-                    className="mono"
-                    style={{
-                      width: 210,
-                      padding: '6px 8px',
-                      borderRadius: 7,
-                      border: '1px solid var(--border)',
-                      background: 'var(--surface-elevated)',
-                      color: 'var(--text-primary)',
-                      fontSize: 12,
-                    }}
-                  >
-                    {[1, 2, 4, 8, 16].map((s) => (
-                      <option key={s} value={s}>
-                        {s}x ({project.width * s}×{project.height * s} px)
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-
-              {exportFormat === 'spritesheet' && (
-                <>
-                  <label
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 12,
-                      fontSize: 12.5,
-                      color: 'var(--text-secondary)',
-                    }}
-                  >
-                    <span>Layout</span>
-                    <select
-                      aria-label="Spritesheet layout"
-                      value={sheetLayout}
-                      onChange={(e) =>
-                        setSheetLayout(e.target.value as 'horizontal' | 'grid')
-                      }
-                      style={{
-                        width: 210,
-                        padding: '6px 8px',
-                        borderRadius: 7,
-                        border: '1px solid var(--border)',
-                        background: 'var(--surface-elevated)',
-                        color: 'var(--text-primary)',
-                        fontSize: 12.5,
-                      }}
-                    >
-                      <option value="horizontal">Horizontal Strip</option>
-                      <option value="grid">Grid</option>
-                    </select>
-                  </label>
-                  {sheetLayout === 'grid' && (
-                    <label
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: 12,
-                        fontSize: 12.5,
-                        color: 'var(--text-secondary)',
-                      }}
-                    >
-                      <span>Columns</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={Math.max(1, project.frames?.length ?? 1)}
-                        value={sheetCols}
-                        onChange={(e) =>
-                          setSheetCols(Math.max(1, Number(e.target.value) || 1))
-                        }
-                        className="mono"
-                        style={{
-                          width: 210,
-                          padding: '6px 8px',
-                          borderRadius: 7,
-                          border: '1px solid var(--border)',
-                          background: 'var(--surface-elevated)',
-                          color: 'var(--text-primary)',
-                          fontSize: 12,
-                        }}
-                      />
-                    </label>
-                  )}
-                </>
-              )}
-            </div>
-
-            <div
-              className="mono"
-              style={{
-                fontSize: 11.5,
-                color: 'var(--text-muted)',
-                padding: '6px 8px',
-                borderRadius: 7,
-                background: 'var(--surface-elevated)',
-                marginBottom: 14,
-              }}
-            >
-              {exportFormat === 'png' && (
-                <>Output: {project.width * exportScale}×{project.height * exportScale} px</>
-              )}
-              {exportFormat === 'spritesheet' && (() => {
-                const n = project.frames?.length ?? 1;
-                const cols = sheetLayout === 'horizontal' ? n : Math.max(1, Math.min(sheetCols, n));
-                const rows = sheetLayout === 'horizontal' ? 1 : Math.ceil(n / cols);
-                return (
-                  <>
-                    Sheet: {n} frame{n === 1 ? '' : 's'} • {cols * project.width * exportScale}×{rows * project.height * exportScale} px
-                  </>
-                );
-              })()}
-              {exportFormat === 'gif' && (
-                <>
-                  GIF: {project.frames?.length ?? 1} frame{(project.frames?.length ?? 1) === 1 ? '' : 's'} @ {project.fps ?? 8} FPS • {project.width * exportScale}×{project.height * exportScale} px
-                </>
-              )}
-              {exportFormat === 'aseprite' && (
-                <>
-                  {project.frames?.length ?? 1} frame{(project.frames?.length ?? 1) === 1 ? '' : 's'}, {project.layers.length} layer{project.layers.length === 1 ? '' : 's'}
-                  {project.groups.length > 0 ? `, ${project.groups.length} group(s)` : ''} • 32-bit RGBA
-                </>
-              )}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button type="button" className="btn" onClick={() => setShowExportModal(false)}>
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn primary"
-                onClick={async () => {
-                  if (exportFormat === 'png') {
-                    downloadProjectPng(project, exportScale);
-                  } else if (exportFormat === 'spritesheet') {
-                    downloadProjectSpritesheet(project, exportScale, sheetLayout, sheetCols);
-                  } else if (exportFormat === 'gif') {
-                    downloadProjectGif(project, exportScale, project.fps ?? 8);
-                  } else {
-                    await downloadProjectAseprite(project, palette);
-                  }
-                  setShowExportModal(false);
-                }}
-              >
-                Download
-              </button>
-            </div>
-          </div>
-        </div>
+      {showSettingsModal && (
+        <SettingsModal
+          uiScale={uiScale}
+          onChangeUiScale={(next) => onChangeUiScale?.(next)}
+          onClose={() => setShowSettingsModal(false)}
+        />
       )}
     </div>
   );

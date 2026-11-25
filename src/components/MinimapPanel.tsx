@@ -48,6 +48,7 @@ function loadSavedState(): {
 export function MinimapPanel({
   minimapRef,
   visible,
+  leftInset = 12,
   rightInset = 12,
   bottomInset = 12,
   onToggleVisible,
@@ -55,6 +56,7 @@ export function MinimapPanel({
 }: {
   minimapRef: React.RefObject<HTMLCanvasElement | null>;
   visible: boolean;
+  leftInset?: number;
   rightInset?: number;
   bottomInset?: number;
   onToggleVisible: () => void;
@@ -104,7 +106,7 @@ export function MinimapPanel({
     const maxW = parent ? parent.width - (panelRect?.width ?? 96) - rightInset : window.innerWidth - 96;
     const maxH = parent ? parent.height - (panelRect?.height ?? 96) - bottomInset : window.innerHeight - 96;
     setPos({
-      x: Math.max(12, Math.min(maxW, e.clientX - dragOffsetRef.current.dx)),
+      x: Math.max(leftInset, Math.min(maxW, e.clientX - dragOffsetRef.current.dx)),
       y: Math.max(12, Math.min(maxH, e.clientY - dragOffsetRef.current.dy)),
     });
   };
@@ -125,10 +127,10 @@ export function MinimapPanel({
   const parentH =
     panelRef.current?.parentElement?.clientHeight ??
     (typeof window !== 'undefined' ? window.innerHeight - 54 : 600);
-  const maxLeft = Math.max(12, parentW - panelW - rightInset);
+  const maxLeft = Math.max(leftInset, parentW - panelW - rightInset);
   const maxTop = Math.max(12, parentH - panelH - bottomInset);
 
-  const effectiveLeft = isDragging ? pos.x : Math.min(Math.max(pos.x, 12), maxLeft);
+  const effectiveLeft = isDragging ? pos.x : Math.min(Math.max(pos.x, leftInset), maxLeft);
   const effectiveTop = isDragging ? pos.y : Math.min(Math.max(pos.y, 12), maxTop);
 
   return (
@@ -199,7 +201,18 @@ export function MinimapPanel({
         </button>
       </div>
 
-      {visible && (
+      <div
+        className="dock-tools"
+        aria-hidden={!visible}
+        style={{
+          maxHeight: visible ? size + 16 : 0,
+          opacity: visible ? 1 : 0,
+          transform: visible ? 'translateY(0) scale(1)' : 'translateY(-6px) scale(0.97)',
+          transformOrigin: 'top center',
+          overflow: 'hidden',
+          pointerEvents: visible ? 'auto' : 'none',
+        }}
+      >
         <div
           style={{
             position: 'relative',
@@ -264,8 +277,8 @@ export function MinimapPanel({
               position: 'absolute',
               right: 0,
               bottom: 0,
-              width: 22,
-              height: 22,
+              width: 24,
+              height: 24,
               cursor: 'nwse-resize',
               touchAction: 'none',
               display: 'flex',
@@ -284,7 +297,7 @@ export function MinimapPanel({
             </svg>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

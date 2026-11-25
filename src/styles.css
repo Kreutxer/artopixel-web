@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --canvas-void: #d8dce6;
   --surface: #ffffff;
   --surface-elevated: #f3f5f9;
@@ -13,9 +14,13 @@
   --backdrop: rgba(0, 0, 0, 0.45);
   --checker-light: #f4f5f8;
   --checker-dark: #dfe3ec;
+  --onion-prev: #e85a2d;
+  --onion-next: #3b82f6;
+  --selection-blue: #3b82f6;
 }
 
 [data-theme='dark'] {
+  color-scheme: dark;
   --canvas-void: #1b1c24;
   --surface: #16181f;
   --surface-elevated: #1f222c;
@@ -30,6 +35,9 @@
   --backdrop: rgba(0, 0, 0, 0.6);
   --checker-light: #1e202b;
   --checker-dark: #151720;
+  --onion-prev: #ff7043;
+  --onion-next: #60a5fa;
+  --selection-blue: #60a5fa;
 }
 
 * {
@@ -167,6 +175,12 @@ body,
   justify-content: center;
   padding: 12px;
   z-index: 60;
+  animation: modalFade 150ms ease;
+}
+
+.modal-backdrop > .floating-card {
+  animation: menuPop 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: center center;
 }
 
 button:focus-visible,
@@ -177,16 +191,49 @@ select:focus-visible,
   outline-offset: 2px;
 }
 
+@keyframes pulseSave {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .icon-btn,
-  .btn,
   .layers-drawer,
   .layer-row,
   .floating-panel-shift,
   .dock-tools,
-  .menu-pop {
+  .project-card,
+  .menu-pop,
+  .menu-pop-up,
+  .modal-backdrop,
+  .modal-backdrop > .floating-card {
     transition: none !important;
     animation: none !important;
+  }
+  .spin {
+    animation: pulseSave 1.4s ease-in-out infinite !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .editor-header {
+    height: auto !important;
+    min-height: 50px;
+    flex-wrap: wrap;
+    padding: 6px 8px !important;
+    gap: 6px !important;
+  }
+  .editor-header-divider {
+    display: none !important;
+  }
+  .editor-header-center {
+    order: 3;
+    flex-basis: 100%;
+    justify-content: flex-start !important;
+    flex-wrap: wrap;
   }
 }
 
@@ -204,9 +251,67 @@ select:focus-visible,
 }
 
 .dock-tools {
-  transition: max-height 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease,
-    transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 160ms ease,
+    transform 200ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 200ms;
   transform-origin: bottom center;
+}
+
+.project-card {
+  transition: transform 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.editor-header,
+.layers-drawer,
+.modal-backdrop > .floating-card,
+.ui-scaled {
+  zoom: var(--ui-scale, 1);
+}
+
+.project-card:hover,
+.project-card:focus-within {
+  border-color: var(--accent) !important;
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+
+.project-card-checker {
+  background-color: var(--checker-dark);
+  background-image:
+    linear-gradient(45deg, color-mix(in srgb, var(--checker-light) 22%, transparent) 25%, transparent 25%),
+    linear-gradient(-45deg, color-mix(in srgb, var(--checker-light) 22%, transparent) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, color-mix(in srgb, var(--checker-light) 22%, transparent) 75%),
+    linear-gradient(-45deg, transparent 75%, color-mix(in srgb, var(--checker-light) 22%, transparent) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.project-card-more {
+  opacity: 0.72;
+  transition: opacity 120ms ease, background 120ms ease;
+}
+
+.project-card:hover .project-card-more,
+.project-card:focus-within .project-card-more,
+.project-card-more[aria-expanded='true'] {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .project-card-more {
+    opacity: 1;
+  }
+}
+
+@keyframes modalFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes menuPop {
@@ -220,9 +325,25 @@ select:focus-visible,
   }
 }
 
+@keyframes menuPopUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .menu-pop {
   animation: menuPop 150ms cubic-bezier(0.22, 1, 0.36, 1);
   transform-origin: top right;
+}
+
+.menu-pop-up {
+  animation: menuPopUp 150ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: bottom left;
 }
 
 .color-slider {
@@ -273,4 +394,26 @@ select:focus-visible,
 
 .spin {
   animation: spin 0.9s linear infinite;
+}
+
+.field-input,
+.field-select {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+
+.field-input:focus,
+.field-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.field-select option {
+  background: var(--surface);
+  color: var(--text-primary);
 }

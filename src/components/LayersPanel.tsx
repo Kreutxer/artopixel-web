@@ -6,6 +6,8 @@ import {
   Contrast,
   Eye,
   EyeOff,
+  Folder,
+  FolderOpen,
   GripVertical,
   Lock,
   MoreHorizontal,
@@ -13,12 +15,79 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { PixelProject } from '../engine/types';
+import { PixelLayer, PixelProject } from '../engine/types';
+import { DeleteGroupModal } from './layers/DeleteGroupModal';
+import { useEscapeKey } from '../hooks/useEscapeKey';
+
+function LayerThumb({
+  layer,
+  width,
+  height,
+  revision,
+}: {
+  layer: PixelLayer;
+  width: number;
+  height: number;
+  revision: number;
+}) {
+  const ref = useRef<HTMLCanvasElement | null>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const img = ctx.createImageData(width, height);
+    const out = img.data;
+    const px = layer.pixels;
+    for (let i = 0; i < width * height; i++) {
+      const argb = px[i];
+      const a = (argb >>> 24) & 0xff;
+      if (a === 0) continue;
+      const off = i * 4;
+      out[off] = (argb >>> 16) & 0xff;
+      out[off + 1] = (argb >>> 8) & 0xff;
+      out[off + 2] = argb & 0xff;
+      out[off + 3] = a;
+    }
+    ctx.putImageData(img, 0, 0);
+  }, [layer, layer.pixels, width, height, revision]);
+
+  return (
+    <div
+      aria-hidden="true"
+      className="project-card-checker"
+      style={{
+        width: 26,
+        height: 26,
+        borderRadius: 5,
+        border: '1px solid var(--border)',
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
+      }}
+    >
+      <canvas
+        ref={ref}
+        style={{
+          width: '100%',
+          height: '100%',
+          objectFit: 'contain',
+          imageRendering: 'pixelated',
+        }}
+      />
+    </div>
+  );
+}
 
 export function LayersPanel({
   project,
+  revision = 0,
   open,
-  width = 244,
+  width = 276,
   isResizing = false,
   dimOtherLayers = false,
   onToggleDimOthers,
@@ -33,6 +102,7 @@ export function LayersPanel({
   onReorderLayer,
   onRenameLayer,
   onDuplicateLayers,
+  onCopyLayersToFrame,
   onMergeLayers,
   onGroupLayers,
   onUngroupLayers,
@@ -43,6 +113,7 @@ export function LayersPanel({
   onSelectedIdsChange,
 }: {
   project: PixelProject;
+  revision?: number;
   open: boolean;
   width?: number;
   isResizing?: boolean;
@@ -59,6 +130,7 @@ export function LayersPanel({
   onReorderLayer: (oldIdx: number, newIdx: number) => void;
   onRenameLayer: (idx: number, name: string) => void;
   onDuplicateLayers: (indices: number[]) => void;
+  onCopyLayersToFrame?: (indices: number[], targetFrameIndex: number | 'all') => void;
   onMergeLayers: (indices: number[]) => void;
   onGroupLayers: (indices: number[], name: string) => void;
   onUngroupLayers: (indices: number[]) => void;
@@ -78,6 +150,11 @@ export function LayersPanel({
     y: number;
     targets: number[];
   } | null>(null);
+  const [copyFrameSubOpen, setCopyFrameSubOpen] = useState(false);
+  useEscapeKey(() => {
+    setCopyFrameSubOpen(false);
+    setCtxMenu(null);
+  }, Boolean(ctxMenu));
   const [promptState, setPromptState] = useState<
     | { kind: 'group'; value: string; targets: number[] }
     | { kind: 'rename'; value: string; index: number }
@@ -264,9 +341,8 @@ export function LayersPanel({
           width: open ? 0 : 14,
           opacity: open ? 0 : 1,
           height: '100%',
-          background: 'color-mix(in srgb, var(--surface) 96%, transparent)',
+          background: 'var(--surface)',
           borderLeft: open ? 'none' : '1px solid var(--border)',
-          backdropFilter: 'blur(8px)',
           transition: 'width 200ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms ease',
         }}
       />
@@ -274,6 +350,7 @@ export function LayersPanel({
       <aside
         aria-label="Layers drawer"
         aria-hidden={!open}
+        inert={!open}
         className="layers-drawer"
         style={{
           position: 'relative',
@@ -281,9 +358,8 @@ export function LayersPanel({
           width: open ? `min(${width}px, 74vw)` : 0,
           opacity: open ? 1 : 0,
           height: '100%',
-          background: 'color-mix(in srgb, var(--surface) 96%, transparent)',
-          borderLeft: open ? '1px solid var(--border)' : 'none',
-          backdropFilter: 'blur(8px)',
+          background: 'var(--surface)',
+          borderLeft: open ? '1px solid var(--border)' : '0px solid transparent',
           padding: open ? '12px 12px 12px 14px' : 0,
           overflow: 'hidden',
           display: 'flex',
@@ -355,6 +431,17 @@ export function LayersPanel({
               <span style={{ fontWeight: 700, fontSize: 13 }}>
                 {selectedIndices.length} selected
               </span>
+              <button
+                type="button"
+                className="btn"
+                style={{ padding: '2px 7px', fontSize: 11 }}
+                onClick={() => {
+                  const allSelected = selectedIds.length === project.layers.length;
+                  setSelectedIds(allSelected ? [] : project.layers.map((ly) => ly.id));
+                }}
+              >
+                {selectedIds.length === project.layers.length ? 'None' : 'Select All'}
+              </button>
             </>
           ) : (
             <span style={{ fontWeight: 700, fontSize: 15 }}>Layers</span>
@@ -471,7 +558,8 @@ export function LayersPanel({
             style={{
               border: 'none',
               background: 'transparent',
-              padding: 0,
+              padding: '2px 4px',
+              minHeight: 24,
               fontSize: 11,
               fontWeight: 600,
               color: 'var(--text-primary)',
@@ -523,17 +611,21 @@ export function LayersPanel({
           {displayRows.map((row) => {
             if (row.kind === 'group') {
               const g = project.groups.find((gr) => gr.id === row.groupId)!;
+              const memberCount = project.layers.filter((ly) => ly.groupId === g.id).length;
               return (
                 <div
                   key={`g_${g.id}`}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
-                    gap: 2,
-                    padding: '2px 0 0',
-                    fontSize: 11.5,
-                    fontWeight: 600,
-                    color: 'var(--text-secondary)',
+                    gap: 4,
+                    padding: '4px 6px',
+                    borderRadius: 10,
+                    background: 'var(--surface-elevated)',
+                    border: '1px solid var(--border)',
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: 'var(--text-primary)',
                   }}
                 >
                   <button
@@ -544,13 +636,13 @@ export function LayersPanel({
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
-                      gap: 3,
+                      gap: 5,
                       background: 'transparent',
                       border: 'none',
                       color: 'inherit',
                       font: 'inherit',
                       cursor: 'pointer',
-                      padding: '4px',
+                      padding: '3px 4px',
                       borderRadius: 6,
                       flex: 1,
                       minWidth: 0,
@@ -558,6 +650,11 @@ export function LayersPanel({
                     }}
                   >
                     {g.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                    {g.collapsed ? (
+                      <Folder size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                    ) : (
+                      <FolderOpen size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+                    )}
                     <span
                       style={{
                         overflow: 'hidden',
@@ -566,6 +663,21 @@ export function LayersPanel({
                       }}
                     >
                       {g.name}
+                    </span>
+                    <span
+                      className="mono"
+                      style={{
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: 'var(--text-muted)',
+                        background: 'var(--surface)',
+                        border: '1px solid var(--border)',
+                        borderRadius: 999,
+                        padding: '0 5px',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {memberCount}
                     </span>
                   </button>
                   <button
@@ -636,9 +748,10 @@ export function LayersPanel({
                     selectedIds.includes(l.id) && selectedIndices.length > 0
                       ? selectedIndices
                       : [row.actualIndex];
+                  setCopyFrameSubOpen(false);
                   setCtxMenu({
-                    x: Math.min(e.clientX, window.innerWidth - 190),
-                    y: Math.min(e.clientY, window.innerHeight - 230),
+                    x: Math.max(8, Math.min(e.clientX, window.innerWidth - 194)),
+                    y: Math.max(8, Math.min(e.clientY, window.innerHeight - 260)),
                     targets: menuTargets,
                   });
                 }}
@@ -647,7 +760,7 @@ export function LayersPanel({
                   handleRowClick(e, row.actualIndex, l.id);
                 }}
                 style={{
-                  marginLeft: row.inGroup ? 10 : 0,
+                  marginLeft: row.inGroup ? 14 : 0,
                   padding: '5px 6px',
                   borderRadius: 10,
                   cursor: 'pointer',
@@ -681,6 +794,20 @@ export function LayersPanel({
                   gap: 4,
                 }}
               >
+                {row.inGroup && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      position: 'absolute',
+                      left: -10,
+                      top: -4,
+                      bottom: -4,
+                      width: 2,
+                      borderRadius: 1,
+                      background: 'var(--border)',
+                    }}
+                  />
+                )}
                 <button
                   type="button"
                   aria-label={`Drag or press Alt+ArrowUp/Down to reorder ${l.name}`}
@@ -759,7 +886,13 @@ export function LayersPanel({
                   aria-label={`Select ${l.name} for group or batch actions`}
                   checked={isChecked}
                   onChange={() => toggleSel(l.id)}
-                  style={{ cursor: 'pointer', flexShrink: 0 }}
+                  style={{ cursor: 'pointer', flexShrink: 0, width: 16, height: 16, margin: 4 }}
+                />
+                <LayerThumb
+                  layer={l}
+                  width={project.width}
+                  height={project.height}
+                  revision={revision}
                 />
                 {inlineRename?.index === row.actualIndex ? (
                   <form
@@ -812,9 +945,10 @@ export function LayersPanel({
                     style={{
                       flex: 1,
                       minWidth: 0,
+                      minHeight: 24,
                       background: 'transparent',
                       border: 'none',
-                      padding: '2px 0',
+                      padding: '3px 0',
                       textAlign: 'left',
                       color: 'inherit',
                       cursor: 'pointer',
@@ -841,12 +975,28 @@ export function LayersPanel({
                       >
                         {l.name}
                       </span>
-                      {l.alphaLocked && (
-                        <Lock size={10} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-                      )}
                     </div>
                   </button>
                 )}
+                <button
+                  type="button"
+                  className={`icon-btn ${l.alphaLocked ? 'active' : ''}`}
+                  style={{
+                    width: 24,
+                    height: 24,
+                    flexShrink: 0,
+                    opacity: l.alphaLocked ? 1 : 0.55,
+                  }}
+                  aria-label={l.alphaLocked ? `Unlock alpha for ${l.name}` : `Lock alpha for ${l.name}`}
+                  aria-pressed={Boolean(l.alphaLocked)}
+                  title={l.alphaLocked ? 'Alpha Lock: On (click to unlock)' : 'Alpha Lock: Off (click to lock)'}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleAlphaLock(row.actualIndex);
+                  }}
+                >
+                  <Lock size={12} />
+                </button>
                 <button
                   type="button"
                   className="icon-btn"
@@ -1000,6 +1150,99 @@ export function LayersPanel({
           >
             Duplicate
           </button>
+          {(project.frames?.length ?? 1) > 1 && onCopyLayersToFrame && (() => {
+            const frames = project.frames ?? [];
+            const activeFrameIdx = project.activeFrameIndex ?? 0;
+            const canOpenLeft = ctxMenu.x >= 170;
+            const canOpenRight = ctxMenu.x + 186 + 164 <= window.innerWidth;
+            const subStyle: React.CSSProperties = canOpenLeft
+              ? { right: '100%', paddingRight: 4, top: -4 }
+              : canOpenRight
+                ? { left: '100%', paddingLeft: 4, top: -4 }
+                : { right: 0, top: '100%', paddingTop: 4 };
+            return (
+              <div
+                style={{ position: 'relative' }}
+                onMouseEnter={() => setCopyFrameSubOpen(true)}
+                onMouseLeave={() => setCopyFrameSubOpen(false)}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  aria-expanded={copyFrameSubOpen}
+                  className="btn"
+                  style={{ width: '100%', border: 'none', justifyContent: 'space-between', fontSize: 12 }}
+                  onClick={() => setCopyFrameSubOpen((v) => !v)}
+                >
+                  <span>Copy to Frame</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>▶</span>
+                </button>
+                {copyFrameSubOpen && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      ...subStyle,
+                      zIndex: 81,
+                    }}
+                  >
+                    <div
+                      role="menu"
+                      className="floating-card menu-pop"
+                      style={{
+                        width: 156,
+                        maxHeight: 'min(260px, calc(100vh - 24px))',
+                        overflowY: 'auto',
+                        padding: 5,
+                        background: 'var(--surface-elevated)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 2,
+                      }}
+                    >
+                      {frames.map((frame, fIdx) => {
+                        if (fIdx === activeFrameIdx) return null;
+                        return (
+                          <button
+                            key={frame.id}
+                            type="button"
+                            role="menuitem"
+                            className="btn"
+                            style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12 }}
+                            onClick={() => {
+                              const t = ctxMenu.targets;
+                              setCopyFrameSubOpen(false);
+                              setCtxMenu(null);
+                              onCopyLayersToFrame(t, fIdx);
+                              setSelectedIds([]);
+                            }}
+                          >
+                            Frame {fIdx + 1}
+                          </button>
+                        );
+                      })}
+                      <div style={{ height: 1, background: 'var(--border)', margin: '2px 4px' }} />
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="btn"
+                        style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12, fontWeight: 600 }}
+                        onClick={() => {
+                          const t = ctxMenu.targets;
+                          setCopyFrameSubOpen(false);
+                          setCtxMenu(null);
+                          onCopyLayersToFrame(t, 'all');
+                          setSelectedIds([]);
+                        }}
+                      >
+                        All Other Frames
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <button
             type="button"
             role="menuitem"
@@ -1025,80 +1268,24 @@ export function LayersPanel({
       )}
 
       {deleteGroupConfirm && (
-        <div
-          className="modal-backdrop"
-          style={{ pointerEvents: 'auto' }}
-          onClick={() => setDeleteGroupConfirm(null)}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-group-title"
-            className="floating-card"
-            style={{
-              width: 'min(380px, calc(100vw - 24px))',
-              padding: 18,
-              background: 'var(--surface)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 14,
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-              <h3 id="delete-group-title" style={{ margin: 0, fontSize: 15 }}>
-                Delete Group &ldquo;{deleteGroupConfirm.name}&rdquo;?
-              </h3>
-              <button
-                type="button"
-                className="icon-btn"
-                style={{ width: 28, height: 28, flexShrink: 0 }}
-                aria-label="Close dialog"
-                onClick={() => setDeleteGroupConfirm(null)}
-              >
-                <X size={15} />
-              </button>
-            </div>
-            <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              This group contains {deleteGroupConfirm.layerIndices.length} layer
-              {deleteGroupConfirm.layerIndices.length === 1 ? '' : 's'}. Choose whether to keep them ungrouped or delete everything inside.
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <button
-                type="button"
-                className="btn"
-                style={{ width: '100%', justifyContent: 'center' }}
-                onClick={() => {
-                  onDeleteGroup(deleteGroupConfirm.id);
-                  setDeleteGroupConfirm(null);
-                }}
-              >
-                Ungroup Only (Keep Layers)
-              </button>
-              <button
-                type="button"
-                className="btn primary"
-                style={{
-                  width: '100%',
-                  justifyContent: 'center',
-                  background: 'var(--danger)',
-                  borderColor: 'var(--danger)',
-                }}
-                onClick={() => {
-                  const { id, layerIndices } = deleteGroupConfirm;
-                  onDeleteGroup(id);
-                  if (layerIndices.length > 0) {
-                    onDeleteLayers(layerIndices);
-                  }
-                  setSelectedIds([]);
-                  setDeleteGroupConfirm(null);
-                }}
-              >
-                Delete Group &amp; Layers
-              </button>
-            </div>
-          </div>
-        </div>
+        <DeleteGroupModal
+          groupName={deleteGroupConfirm.name}
+          layerCount={deleteGroupConfirm.layerIndices.length}
+          onCancel={() => setDeleteGroupConfirm(null)}
+          onUngroupOnly={() => {
+            onDeleteGroup(deleteGroupConfirm.id);
+            setDeleteGroupConfirm(null);
+          }}
+          onDeleteAll={() => {
+            const { id, layerIndices } = deleteGroupConfirm;
+            onDeleteGroup(id);
+            if (layerIndices.length > 0) {
+              onDeleteLayers(layerIndices);
+            }
+            setSelectedIds([]);
+            setDeleteGroupConfirm(null);
+          }}
+        />
       )}
     </div>
   );

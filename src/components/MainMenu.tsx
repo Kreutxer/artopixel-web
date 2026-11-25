@@ -3,6 +3,7 @@ import {
   Copy,
   ImagePlus,
   Moon,
+  MoreHorizontal,
   Pencil,
   Plus,
   Search,
@@ -11,7 +12,9 @@ import {
   X,
 } from 'lucide-react';
 import { createNewProject } from '../engine/pixelEngine';
-import { parseAsepriteBuffer } from '../engine/asepriteParser';
+import { importProjectFromFile } from '../engine/importer';
+import { useEscapeKey } from '../hooks/useEscapeKey';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import {
   deleteProject,
   loadAllProjects,
@@ -85,8 +88,26 @@ export function MainMenu({
   const [sortBy, setSortBy] = useState<'recent' | 'name' | 'size'>('recent');
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const newDialogRef = useRef<HTMLDivElement | null>(null);
+  const deleteDialogRef = useRef<HTMLDivElement | null>(null);
+  useFocusTrap(newDialogRef, showNew);
+  useFocusTrap(deleteDialogRef, Boolean(confirmDelete));
+  useEscapeKey(() => setOpenMenuId(null), Boolean(openMenuId));
+
+  useEffect(() => {
+    if (!openMenuId) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest('[data-card-menu="true"]')) {
+        setOpenMenuId(null);
+      }
+    };
+    window.addEventListener('pointerdown', onDown);
+    return () => window.removeEventListener('pointerdown', onDown);
+  }, [openMenuId]);
 
   const refresh = async () => {
     try {
@@ -134,65 +155,15 @@ export function MainMenu({
 
   const handleImportFile = async (file: File) => {
     setImportErr(null);
-    const lower = file.name.toLowerCase();
-    if (lower.endsWith('.ase') || lower.endsWith('.aseprite')) {
-      try {
-        const buf = await file.arrayBuffer();
-        const baseName = file.name.replace(/\.(ase|aseprite)$/i, '') || 'Aseprite Sprite';
-        const { project } = await parseAsepriteBuffer(buf, baseName);
-        await saveProject(project);
-        onOpenProject(project);
-      } catch (err) {
-        setImportErr(
-          err instanceof Error ? err.message : 'Failed to parse Aseprite file.'
-        );
-      }
-      return;
-    }
-
-    if (!file.type.startsWith('image/')) {
-      setImportErr('Please choose a PNG, .ase, or .aseprite file.');
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = async () => {
-      URL.revokeObjectURL(url);
-      const w = img.naturalWidth;
-      const h = img.naturalHeight;
-      if (w < 4 || h < 4 || w > 1024 || h > 1024) {
-        setImportErr(
-          `Image must be between 4×4 and 1024×1024 pixels (got ${w}×${h}).`
-        );
-        return;
-      }
-      const off = document.createElement('canvas');
-      off.width = w;
-      off.height = h;
-      const ctx = off.getContext('2d');
-      if (!ctx) return;
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(img, 0, 0);
-      const data = ctx.getImageData(0, 0, w, h).data;
-      const baseName = file.name.replace(/\.[^.]+$/, '') || `Sprite ${w}x${h}`;
-      const proj = createNewProject(baseName, w, h);
-      const px = proj.layers[0].pixels;
-      for (let i = 0; i < w * h; i++) {
-        const off4 = i * 4;
-        const r = data[off4];
-        const g = data[off4 + 1];
-        const b = data[off4 + 2];
-        const a = data[off4 + 3];
-        px[i] = a === 0 ? 0 : (((a << 24) | (r << 16) | (g << 8) | b) >>> 0);
-      }
+    try {
+      const proj = await importProjectFromFile(file);
       await saveProject(proj);
       onOpenProject(proj);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      setImportErr('Could not decode the selected image file.');
-    };
-    img.src = url;
+    } catch (err) {
+      setImportErr(
+        err instanceof Error ? err.message : 'Failed to import selected file.'
+      );
+    }
   };
 
   const handleDuplicate = async (p: PixelProject) => {
@@ -254,14 +225,14 @@ export function MainMenu({
           type="button"
           className="btn"
           onClick={() => importInputRef.current?.click()}
-          title="Import a PNG or .ase / .aseprite file (up to 1024×1024)"
+          title="Import a .apxl, PNG, or .ase / .aseprite file (up to 1024×1024)"
         >
-          <ImagePlus size={15} /> Import PNG / ASE
+          <ImagePlus size={15} /> Import .apxl / PNG / ASE
         </button>
         <input
           ref={importInputRef}
           type="file"
-          accept="image/png,image/*,.ase,.aseprite"
+          accept="image/png,image/*,.apxl,.ase,.aseprite"
           style={{ display: 'none' }}
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -493,162 +464,279 @@ export function MainMenu({
             </span>
           </button>
 
-          {filteredProjects.map((p) => (
+          {projects.length > 0 && filteredProjects.length === 0 && (
             <div
-              key={p.id}
               style={{
-                aspectRatio: '0.88',
+                gridColumn: '1 / -1',
                 borderRadius: 14,
-                border: '1px solid var(--border)',
+                border: '1px dashed var(--border)',
                 background: 'var(--surface)',
-                padding: 10,
+                padding: '28px 20px',
                 display: 'flex',
                 flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 10,
+                textAlign: 'center',
               }}
             >
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+                No matching sprites
+              </div>
+              <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                No sprites match your current search or size filter.
+              </div>
               <button
                 type="button"
-                aria-label={`Open ${p.name} (${p.width} by ${p.height})`}
-                onClick={() => onOpenProject(p)}
-                style={{
-                  flex: 1,
-                  background: 'var(--checker-dark)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 10,
-                  padding: 8,
-                  overflow: 'hidden',
-                  cursor: 'pointer',
-                  display: 'block',
-                  width: '100%',
+                className="btn"
+                onClick={() => {
+                  setQuery('');
+                  setSizeFilter('all');
                 }}
               >
-                <ProjectThumb project={p} />
+                Clear filters
               </button>
+            </div>
+          )}
 
-              <div style={{ marginTop: 8 }}>
-                {renamingId === p.id ? (
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      commitRename(p);
-                    }}
-                    style={{ display: 'flex', gap: 4, marginBottom: 4 }}
-                  >
-                    <input
-                      autoFocus
-                      aria-label="Sprite name"
-                      value={renameDraft}
-                      onChange={(e) => setRenameDraft(e.target.value)}
-                      onBlur={() => commitRename(p)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') setRenamingId(null);
-                      }}
-                      style={{
-                        flex: 1,
-                        minWidth: 0,
-                        padding: '3px 6px',
-                        borderRadius: 6,
-                        border: '1px solid var(--accent)',
-                        background: 'var(--surface-elevated)',
-                        color: 'var(--text-primary)',
-                        fontSize: 12.5,
-                      }}
-                    />
-                  </form>
-                ) : (
+          {filteredProjects.map((p) => {
+            const frameCount = p.frames?.length ?? 1;
+            const menuOpen = openMenuId === p.id;
+            return (
+              <div
+                key={p.id}
+                className="project-card"
+                style={{
+                  aspectRatio: '0.88',
+                  borderRadius: 14,
+                  border: '1px solid var(--border)',
+                  background: 'var(--surface)',
+                  padding: 10,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  position: 'relative',
+                }}
+              >
+                <div
+                  className="project-card-checker"
+                  style={{
+                    flex: 1,
+                    position: 'relative',
+                    border: '1px solid var(--border)',
+                    borderRadius: 10,
+                    overflow: 'hidden',
+                  }}
+                >
                   <button
                     type="button"
+                    aria-label={`Open ${p.name} (${p.width} by ${p.height})`}
                     onClick={() => onOpenProject(p)}
                     style={{
                       width: '100%',
+                      height: '100%',
                       background: 'transparent',
                       border: 'none',
-                      padding: 0,
-                      textAlign: 'left',
-                      color: 'inherit',
+                      padding: 10,
                       cursor: 'pointer',
+                      display: 'block',
                     }}
                   >
-                    <div
+                    <ProjectThumb project={p} />
+                  </button>
+
+                  <span
+                    className="mono"
+                    style={{
+                      position: 'absolute',
+                      top: 6,
+                      left: 6,
+                      pointerEvents: 'none',
+                      padding: '2px 6px',
+                      borderRadius: 6,
+                      fontSize: 10,
+                      fontWeight: 600,
+                      background: 'color-mix(in srgb, var(--surface) 84%, transparent)',
+                      border: '1px solid var(--border)',
+                      color: 'var(--text-primary)',
+                    }}
+                  >
+                    {p.width}×{p.height}
+                    {frameCount > 1 ? ` · ${frameCount}F` : ''}
+                  </span>
+
+                  <div
+                    data-card-menu="true"
+                    style={{ position: 'absolute', top: 5, right: 5 }}
+                  >
+                    <button
+                      type="button"
+                      className="icon-btn project-card-more"
                       style={{
-                        fontWeight: 700,
-                        fontSize: 13,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
+                        width: 28,
+                        height: 28,
+                        background: 'color-mix(in srgb, var(--surface) 88%, transparent)',
+                        borderColor: menuOpen ? 'var(--accent)' : 'var(--border)',
+                      }}
+                      aria-label={`Actions for ${p.name}`}
+                      aria-haspopup="menu"
+                      aria-expanded={menuOpen}
+                      title="Actions"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setOpenMenuId((cur) => (cur === p.id ? null : p.id));
                       }}
                     >
-                      {p.name}
-                    </div>
-                  </button>
-                )}
+                      <MoreHorizontal size={14} />
+                    </button>
 
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    marginTop: 2,
-                    gap: 2,
-                  }}
-                >
+                    {menuOpen && (
+                      <div
+                        role="menu"
+                        className="floating-card menu-pop"
+                        style={{
+                          position: 'absolute',
+                          top: 32,
+                          right: 0,
+                          width: 148,
+                          padding: 5,
+                          background: 'var(--surface-elevated)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: 2,
+                          zIndex: 40,
+                          transformOrigin: 'top right',
+                        }}
+                      >
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="btn"
+                          style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12 }}
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            setRenameDraft(p.name);
+                            setRenamingId(p.id);
+                          }}
+                        >
+                          <Pencil size={13} /> Rename
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="btn"
+                          style={{ border: 'none', justifyContent: 'flex-start', fontSize: 12 }}
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            handleDuplicate(p);
+                          }}
+                        >
+                          <Copy size={13} /> Duplicate
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="btn"
+                          style={{
+                            border: 'none',
+                            justifyContent: 'flex-start',
+                            fontSize: 12,
+                            color: 'var(--danger)',
+                          }}
+                          onClick={() => {
+                            setOpenMenuId(null);
+                            setConfirmDelete(p);
+                          }}
+                        >
+                          <Trash2 size={13} /> Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 8, minWidth: 0 }}>
+                  {renamingId === p.id ? (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        commitRename(p);
+                      }}
+                      style={{ display: 'flex', gap: 4, marginBottom: 4 }}
+                    >
+                      <input
+                        autoFocus
+                        aria-label="Sprite name"
+                        value={renameDraft}
+                        onChange={(e) => setRenameDraft(e.target.value)}
+                        onBlur={() => commitRename(p)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') setRenamingId(null);
+                        }}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          padding: '3px 6px',
+                          borderRadius: 6,
+                          border: '1px solid var(--accent)',
+                          background: 'var(--surface-elevated)',
+                          color: 'var(--text-primary)',
+                          fontSize: 12.5,
+                        }}
+                      />
+                    </form>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => onOpenProject(p)}
+                      style={{
+                        width: '100%',
+                        background: 'transparent',
+                        border: 'none',
+                        padding: 0,
+                        textAlign: 'left',
+                        color: 'inherit',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          fontSize: 13,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {p.name}
+                      </div>
+                    </button>
+                  )}
+
                   <div
                     className="mono"
                     style={{
-                      flex: 1,
-                      minWidth: 0,
-                      fontSize: 10.5,
+                      marginTop: 2,
+                      fontSize: 11,
                       color: 'var(--text-secondary)',
                       whiteSpace: 'nowrap',
                       overflow: 'hidden',
                       textOverflow: 'ellipsis',
                     }}
                   >
-                    {p.width}×{p.height} • {p.layers.length}L •{' '}
+                    {p.layers.length} {p.layers.length === 1 ? 'layer' : 'layers'} •{' '}
                     {formatRelativeTime(p.updatedAt)}
                   </div>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    style={{ width: 30, height: 30 }}
-                    aria-label={`Rename ${p.name}`}
-                    title="Rename"
-                    onClick={() => {
-                      setRenameDraft(p.name);
-                      setRenamingId(p.id);
-                    }}
-                  >
-                    <Pencil size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    style={{ width: 30, height: 30 }}
-                    aria-label={`Duplicate ${p.name}`}
-                    title="Duplicate"
-                    onClick={() => handleDuplicate(p)}
-                  >
-                    <Copy size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    style={{ width: 30, height: 30, color: 'var(--danger)' }}
-                    aria-label={`Delete ${p.name}`}
-                    title="Delete"
-                    onClick={() => setConfirmDelete(p)}
-                  >
-                    <Trash2 size={13} />
-                  </button>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </main>
 
       {showNew && (
         <div className="modal-backdrop" onClick={() => setShowNew(false)}>
           <div
+            ref={newDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="new-canvas-title"
@@ -795,6 +883,7 @@ export function MainMenu({
       {confirmDelete && (
         <div className="modal-backdrop" onClick={() => setConfirmDelete(null)}>
           <div
+            ref={deleteDialogRef}
             role="dialog"
             aria-modal="true"
             aria-labelledby="delete-canvas-title"

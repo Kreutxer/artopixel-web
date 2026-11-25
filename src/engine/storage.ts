@@ -1,9 +1,11 @@
+import { buildApxlBlob, downloadProjectApxl } from './apxlFormat';
 import { PixelFrame, PixelLayer, PixelProject, SavedPalette } from './types';
 
 const DB_NAME = 'artopixel_web_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_PROJECTS = 'projects';
 const STORE_PALETTES = 'palettes';
+const STORE_HANDLES = 'file_handles';
 const THEME_KEY = 'artopixel_theme';
 
 function openDb(): Promise<IDBDatabase> {
@@ -17,10 +19,30 @@ function openDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(STORE_PALETTES)) {
         db.createObjectStore(STORE_PALETTES, { keyPath: 'id' });
       }
+      if (!db.objectStoreNames.contains(STORE_HANDLES)) {
+        db.createObjectStore(STORE_HANDLES, { keyPath: 'projectId' });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+interface SerializedLayer {
+  id: string;
+  name: string;
+  visible: boolean;
+  opacity: number;
+  alphaLocked?: boolean;
+  groupId: string | null;
+  pixels: Uint32Array | number[];
+}
+
+interface SerializedFrame {
+  id: string;
+  layers: SerializedLayer[];
+  groups: PixelProject['groups'];
+  activeLayerIndex: number;
 }
 
 interface SerializedProject {
@@ -29,61 +51,103 @@ interface SerializedProject {
   width: number;
   height: number;
   activeLayerIndex: number;
+  frames?: SerializedFrame[];
+  activeFrameIndex?: number;
+  fps?: number;
   referenceDataUrl: string | null;
   referenceVisible: boolean;
   updatedAt: number;
   groups: PixelProject['groups'];
-  layers: Array<{
-    id: string;
-    name: string;
-    visible: boolean;
-    opacity: number;
-    groupId: string | null;
-    pixels: number[];
-  }>;
+  layers: SerializedLayer[];
+}
+
+function serializeLayer(l: PixelLayer): SerializedLayer {
+  return {
+    id: l.id,
+    name: l.name,
+    visible: l.visible,
+    opacity: l.opacity,
+    alphaLocked: l.alphaLocked ?? false,
+    groupId: l.groupId,
+    pixels: l.pixels,
+  };
+}
+
+function deserializeLayer(l: SerializedLayer): PixelLayer {
+  return {
+    id: l.id,
+    name: l.name,
+    visible: l.visible,
+    opacity: l.opacity,
+    alphaLocked: l.alphaLocked ?? false,
+    groupId: l.groupId ?? null,
+    pixels: new Uint32Array(l.pixels),
+  };
 }
 
 function serializeProject(p: PixelProject): SerializedProject {
+  const activeIdx = Math.max(0, Math.min(p.activeFrameIndex ?? 0, (p.frames?.length ?? 1) - 1));
+  const serializedFrames: SerializedFrame[] | undefined = p.frames?.map((f, idx) =>
+    idx === activeIdx
+      ? {
+          id: f.id,
+          layers: p.layers.map(serializeLayer),
+          groups: p.groups,
+          activeLayerIndex: p.activeLayerIndex,
+        }
+      : {
+          id: f.id,
+          layers: f.layers.map(serializeLayer),
+          groups: f.groups,
+          activeLayerIndex: f.activeLayerIndex,
+        }
+  );
+
   return {
     id: p.id,
     name: p.name,
     width: p.width,
     height: p.height,
     activeLayerIndex: p.activeLayerIndex,
+    frames: serializedFrames,
+    activeFrameIndex: p.frames ? activeIdx : undefined,
+    fps: p.fps,
     referenceDataUrl: p.referenceDataUrl,
     referenceVisible: p.referenceVisible,
     updatedAt: p.updatedAt,
     groups: p.groups,
-    layers: p.layers.map((l) => ({
-      id: l.id,
-      name: l.name,
-      visible: l.visible,
-      opacity: l.opacity,
-      groupId: l.groupId,
-      pixels: Array.from(l.pixels),
-    })),
+    layers: p.layers.map(serializeLayer),
   };
 }
 
 function deserializeProject(raw: SerializedProject): PixelProject {
+  const frames: PixelFrame[] | undefined = raw.frames?.map((f) => ({
+    id: f.id,
+    layers: f.layers.map(deserializeLayer),
+    groups: f.groups ?? [],
+    activeLayerIndex: f.activeLayerIndex ?? 0,
+  }));
+  const activeFrameIndex =
+    frames && frames.length > 0
+      ? Math.max(0, Math.min(raw.activeFrameIndex ?? 0, frames.length - 1))
+      : undefined;
+  const activeFrame =
+    frames && activeFrameIndex !== undefined ? frames[activeFrameIndex] : undefined;
+
   return {
     id: raw.id,
     name: raw.name,
     width: raw.width,
     height: raw.height,
-    activeLayerIndex: raw.activeLayerIndex,
+    activeLayerIndex: activeFrame?.activeLayerIndex ?? raw.activeLayerIndex,
+    frames,
+    activeFrameIndex,
+    fps: raw.fps,
     referenceDataUrl: raw.referenceDataUrl ?? null,
     referenceVisible: raw.referenceVisible ?? true,
     updatedAt: raw.updatedAt ?? Date.now(),
-    groups: raw.groups ?? [],
-    layers: raw.layers.map((l) => ({
-      id: l.id,
-      name: l.name,
-      visible: l.visible,
-      opacity: l.opacity,
-      groupId: l.groupId ?? null,
-      pixels: new Uint32Array(l.pixels),
-    })),
+    groups: activeFrame?.groups ?? raw.groups ?? [],
+    layers: activeFrame?.layers ?? raw.layers.map(deserializeLayer),
   };
 }
 
@@ -124,11 +188,116 @@ export async function saveProject(project: PixelProject): Promise<void> {
 export async function deleteProject(id: string): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_PROJECTS, 'readwrite');
+    const tx = db.transaction([STORE_PROJECTS, STORE_HANDLES], 'readwrite');
     tx.objectStore(STORE_PROJECTS).delete(id);
+    tx.objectStore(STORE_HANDLES).delete(id);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
+}
+
+interface HandlePermissionDescriptor {
+  mode?: 'read' | 'readwrite';
+}
+
+interface ExtendedFileHandle extends FileSystemFileHandle {
+  queryPermission?: (descriptor?: HandlePermissionDescriptor) => Promise<PermissionState>;
+  requestPermission?: (descriptor?: HandlePermissionDescriptor) => Promise<PermissionState>;
+}
+
+interface PickerWindow extends Window {
+  showSaveFilePicker?: (options?: {
+    suggestedName?: string;
+    types?: Array<{
+      description?: string;
+      accept: Record<string, string[]>;
+    }>;
+  }) => Promise<ExtendedFileHandle>;
+}
+
+export function supportsFileSystemAccess(): boolean {
+  return typeof window !== 'undefined' && typeof (window as PickerWindow).showSaveFilePicker === 'function';
+}
+
+export async function loadFileHandle(projectId: string): Promise<ExtendedFileHandle | null> {
+  try {
+    const db = await openDb();
+    return await new Promise((resolve) => {
+      const tx = db.transaction(STORE_HANDLES, 'readonly');
+      const req = tx.objectStore(STORE_HANDLES).get(projectId);
+      req.onsuccess = () => {
+        const rec = req.result as { projectId: string; handle: ExtendedFileHandle } | undefined;
+        resolve(rec?.handle ?? null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function saveFileHandle(projectId: string, handle: FileSystemFileHandle): Promise<void> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_HANDLES, 'readwrite');
+    tx.objectStore(STORE_HANDLES).put({ projectId, handle });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function saveProjectToDisk(
+  project: PixelProject,
+  opts?: { saveAs?: boolean }
+): Promise<{ status: 'saved'; fileName: string; method: 'handle' | 'download' } | { status: 'cancelled' }> {
+  const pickerWin = window as PickerWindow;
+  if (!pickerWin.showSaveFilePicker) {
+    const fileName = await downloadProjectApxl(project);
+    return { status: 'saved', fileName, method: 'download' };
+  }
+
+  let handle: ExtendedFileHandle | null = opts?.saveAs ? null : await loadFileHandle(project.id);
+
+  if (handle) {
+    try {
+      const perm = (await handle.queryPermission?.({ mode: 'readwrite' })) ?? 'granted';
+      if (perm !== 'granted') {
+        const requested = (await handle.requestPermission?.({ mode: 'readwrite' })) ?? 'denied';
+        if (requested !== 'granted') {
+          handle = null;
+        }
+      }
+    } catch {
+      handle = null;
+    }
+  }
+
+  if (!handle) {
+    const safeName = project.name.replace(/[^a-zA-Z0-9_-]/g, '_') || 'sprite';
+    try {
+      handle = await pickerWin.showSaveFilePicker({
+        suggestedName: `${safeName}.apxl`,
+        types: [
+          {
+            description: 'ArtoPixel Project (.apxl)',
+            accept: { 'application/octet-stream': ['.apxl'] },
+          },
+        ],
+      });
+      await saveFileHandle(project.id, handle);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return { status: 'cancelled' };
+      }
+      throw err;
+    }
+  }
+
+  const blob = await buildApxlBlob(project);
+  const writable = await handle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+  return { status: 'saved', fileName: handle.name, method: 'handle' };
 }
 
 export async function loadCustomPalettes(): Promise<SavedPalette[]> {
