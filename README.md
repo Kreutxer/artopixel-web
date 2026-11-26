@@ -37,13 +37,22 @@ A browser-based pixel-art and frame-by-frame animation studio built with **React
 - **Hold-to-Eyedropper (`I` / `Alt`)**: Samples pixels while held and returns to your previous tool on release.
 - **Canvas Right-Click Menu**: Quick access to **Color ▶** (`Eyedropper`, `Darken`, `Lighten`, `Replace Color…`) and **Selection ▶** (`Cut`, `Copy`, `Paste`, `Flip H/V`, `Rotate 90°`, `Deselect`).
 
+### Multi-Canvas Workspace & Folders
+- **Multi-Canvas Tabs**: Work on multiple independent canvases inside a single project (each with its own dimensions, layers, animation frames, FPS, and per-canvas undo/redo history & viewport zoom/pan), with drag-to-reorder tabs and tab close/reopen.
+- **Project Canvases Drawer & Nested Folders**: Collapsible left **Project Canvases** tree supporting nested folders, **Active Folder** selection (new subfolders and canvases automatically nest inside the active folder), and drag-and-drop organization for both canvases and folders.
+- **Folder Right-Click Menu**: Quickly trigger **New Subfolder**, **New Canvas Here**, **Export Folder…**, **Rename**, or **Delete Folder**.
+
 ### Import, Export & Workspace
-- **Import**: Open `.png` / standard images (`4×4` to `1024×1024 px`) and multi-frame `.ase` / `.aseprite` files.
-- **Export**:
+- **Import**: Open `.png` / standard images (`4×4` to `1024×1024 px`), multi-frame `.ase` / `.aseprite` files, and native **ArtoPixel (`.apxl`)** files.
+- **Single-Canvas Export**:
   - **PNG Image** (`1x`, `2x`, `4x`, `8x`, `16x`)
   - **Spritesheet (PNG)** (Horizontal strip or Grid with configurable columns)
   - **Animated GIF** (offline LZW GIF89a encoder at project FPS)
+  - **ArtoPixel (`.apxl`)** (gzipped lossless format preserving layers, groups, frames, alpha locks, and reference image)
   - **Aseprite (`.aseprite`)** (multi-frame 32-bit RGBA with layers, groups, opacity, and palette)
+- **Folder & Project ZIP Export (`.zip`)**:
+  - Export any folder (including nested subfolders) or **All Canvases** via the **Export** button (`Scope` dropdown) or folder right-click **Export Folder…**.
+  - Choose **PNG Images (`.png`)**, **ArtoPixel Source (`.apxl`)**, or **Both (`png/` + `source/`)** with mirrored subfolder hierarchy inside the `.zip` archive.
 - **Light & Dark Themes**: Instant top-bar theme toggle with adaptive canvas checkerboard.
 - **Customizable Shortcuts**: Rebind tool and brush shortcuts in `☰ → Options → Shortcuts`.
 
