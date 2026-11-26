@@ -1,6 +1,6 @@
 # ArtoPixel Web
 
-A fast, offline-first **browser pixel art editor** and **frame-by-frame sprite animation studio** built with **React 19**, **TypeScript**, **Vite**, and **HTML5 2D Canvas** (`imageSmoothingEnabled = false`). Designed for indie game developers, pixel artists, and tileset creators—no account or installation required, with automatic **IndexedDB** local persistence.
+A fast, **open-source**, offline-first **browser pixel art editor** and **frame-by-frame sprite animation studio** built with **React 19**, **TypeScript**, **Vite**, and **HTML5 2D Canvas** (`imageSmoothingEnabled = false`). Designed for indie game developers, pixel artists, and tileset creators—no account or installation required, with automatic **IndexedDB** local persistence.
 
 ---
 
@@ -8,7 +8,7 @@ A fast, offline-first **browser pixel art editor** and **frame-by-frame sprite a
 
 - **Multi-Canvas & Nested Folder Workspace**: Unlike single-canvas web pixel editors, ArtoPixel lets you manage entire sprite packs, character sheets, and UI sets inside one project—complete with nested folders, **Active Folder** targeting, independent canvas sizes, per-canvas undo/redo history, and drag-and-drop organization.
 - **Game-Dev Ready Folder `.zip` Export**: Package any folder or full project into a `.zip` archive directly in the browser, exporting scaled `.png` sprites, lossless `.apxl` source files, or **both** in mirrored `png/` and `source/` directories.
-- **Figma-Style Layer Finder (`Ctrl + Hover` / `Ctrl + Click`)**: Instantly highlight the pixel silhouette of the topmost visible layer under your cursor and click to select it—paired with non-destructive **Dim Other Layers** and **Alpha Lock**.
+- **Instant Layer Finder (`Ctrl + Hover` / `Ctrl + Click`)**: Instantly highlight the pixel silhouette of the topmost visible layer under your cursor and click to select it—paired with non-destructive **Dim Other Layers** and **Alpha Lock**.
 - **Precision Pixel Art & Seamless Tileset Tools**: Includes **Pixel-Perfect Mode (`P`)** with L-corner removal, draggable **Bezier Curves (`U`)**, **Tiled `3×3` Seamless Mode** for game textures, draggable **Mirror Symmetry** axes, **1px Auto-Outline**, and **2-Color Onion Skinning**.
 - **100% Offline Studio with `.aseprite` & `.apxl` Support**: Import and export multi-frame **Aseprite (`.aseprite`)** files, generate **Animated GIFs** and **PNG Spritesheets**, extract palettes with **Median Cut**, and save lossless gzipped **ArtoPixel (`.apxl`)** files.
 
@@ -33,7 +33,7 @@ A fast, offline-first **browser pixel art editor** and **frame-by-frame sprite a
 - **Layers & 1-Level Groups**: Drag-and-drop reordering, group/ungroup (`Ctrl+G` / `Ctrl+Shift+G`), merge, duplicate, double-click inline rename, and group deletion confirmation.
 - **Layer Alpha Lock**: Lock transparent pixels so strokes and fills only paint on existing opaque pixels.
 - **Non-Destructive Dim Other Layers**: Temporarily dim non-active layers to `25%` in the viewport without changing saved opacities or exports.
-- **Figma-Style Layer Finder (`Ctrl + Hover` / `Ctrl + Left-Click`)**: Hold `Ctrl` while hovering to highlight the exact pixel silhouette of the topmost visible layer under the cursor; click to select it immediately.
+- **Instant Layer Finder (`Ctrl + Hover` / `Ctrl + Left-Click`)**: Hold `Ctrl` while hovering to highlight the exact pixel silhouette of the topmost visible layer under the cursor; click to select it immediately.
 - **Collapsed Active Layer Pill**: Quick opacity slider, visibility toggle, and layer switcher when the Layers drawer is collapsed.
 
 ### Animation Timeline & Onion Skin
@@ -113,3 +113,13 @@ Outputs the production bundle to `dist/`.
 - **Frontend**: React 19, TypeScript, Vite 6, Lucide Icons
 - **Rendering**: HTML5 2D Canvas (`Uint32Array` pixel buffers, nearest-neighbor scaling)
 - **Storage**: Browser IndexedDB (`artopixel_web_db`) & `localStorage` for preferences/shortcuts
+
+---
+
+## Open Source & Contributing
+
+ArtoPixel Web is open source and community contributions are welcome!
+
+- **Bug reports & feature requests**: Open an issue on [GitHub Issues](https://github.com/Kreutxer/artopixel-web/issues).
+- **Pull requests**: Fork the repository, create a feature branch, run `npm run build` to verify TypeScript and bundle checks, and open a PR.
+- **License**: Released under the [MIT License](LICENSE).
