@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, Contrast, Eye, EyeOff } from 'lucide-react';
+import { Contrast, Eye, EyeOff } from 'lucide-react';
 import { PixelLayer } from '../../engine/types';
 import { useEscapeKey } from '../../hooks/useEscapeKey';
 
@@ -22,22 +22,22 @@ export function LayerPill({
   onSetOpacity: (opacity: number) => void;
   onSelectLayer: (idx: number) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [popoverMode, setPopoverMode] = useState<'layers' | 'opacity' | null>(null);
   const pillRef = useRef<HTMLDivElement | null>(null);
   const activeLayer = layers[activeLayerIndex];
 
-  useEscapeKey(() => setOpen(false), open);
+  useEscapeKey(() => setPopoverMode(null), popoverMode !== null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!popoverMode) return;
     const onDown = (e: PointerEvent) => {
       if (pillRef.current && !pillRef.current.contains(e.target as Node)) {
-        setOpen(false);
+        setPopoverMode(null);
       }
     };
     window.addEventListener('pointerdown', onDown);
     return () => window.removeEventListener('pointerdown', onDown);
-  }, [open]);
+  }, [popoverMode]);
 
   if (!activeLayer) return null;
 
@@ -50,26 +50,34 @@ export function LayerPill({
         top: topOffset,
         left: '50%',
         transform: 'translateX(-50%)',
+        transition: 'top 220ms cubic-bezier(0.22, 1, 0.36, 1)',
         zIndex: 28,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
       }}
     >
       <div
         className="floating-card"
         style={{
+          width: 200,
+          height: 28,
           display: 'flex',
           alignItems: 'center',
           gap: 2,
-          padding: '2px 4px 2px 8px',
+          padding: '2px 4px 2px 10px',
           borderRadius: 999,
         }}
       >
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          aria-label={`Active layer: ${activeLayer.name}. Click for opacity and layer switcher`}
-          title="Click for Opacity & Layer Switcher"
+          onClick={() => setPopoverMode((m) => (m === 'layers' ? null : 'layers'))}
+          aria-expanded={popoverMode === 'layers'}
+          aria-label={`Active layer: ${activeLayer.name}. Click to switch layer`}
+          title="Click to switch layer"
           style={{
+            flex: 1,
+            minWidth: 0,
             border: 'none',
             background: 'transparent',
             color: 'var(--text-primary)',
@@ -77,10 +85,8 @@ export function LayerPill({
             fontWeight: 600,
             display: 'inline-flex',
             alignItems: 'center',
-            gap: 4,
-            padding: '2px 3px',
+            padding: '2px 2px',
             cursor: 'pointer',
-            maxWidth: 136,
           }}
         >
           <span
@@ -92,10 +98,6 @@ export function LayerPill({
           >
             {activeLayer.name}
           </span>
-          <span className="mono" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            {Math.round(activeLayer.opacity * 100)}%
-          </span>
-          <ChevronDown size={11} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
         </button>
         {onToggleDimOthers && (
           <button
@@ -122,29 +124,112 @@ export function LayerPill({
         </button>
       </div>
 
-      {open && (
+      <button
+        type="button"
+        className="floating-card mono"
+        onClick={() => setPopoverMode((m) => (m === 'opacity' ? null : 'opacity'))}
+        aria-expanded={popoverMode === 'opacity'}
+        aria-label={`Active layer opacity ${Math.round(activeLayer.opacity * 100)}%. Click to adjust`}
+        title="Click to adjust layer opacity"
+        style={{
+          width: 46,
+          height: 28,
+          borderRadius: 999,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 11,
+          fontWeight: 600,
+          fontVariantNumeric: 'tabular-nums',
+          color: 'var(--text-secondary)',
+          cursor: 'pointer',
+          padding: 0,
+          flexShrink: 0,
+        }}
+      >
+        {Math.round(activeLayer.opacity * 100)}%
+      </button>
+
+      {popoverMode === 'layers' && (
         <div
           style={{
             position: 'absolute',
             top: 'calc(100% + 6px)',
-            left: '50%',
-            transform: 'translateX(-50%)',
+            left: 0,
             zIndex: 40,
           }}
         >
           <div
             className="floating-card menu-pop"
             style={{
-              width: 224,
-              padding: 10,
+              width: 200,
+              padding: 6,
               background: 'var(--surface)',
               display: 'flex',
               flexDirection: 'column',
-              gap: 8,
+              gap: 2,
+              maxHeight: 170,
+              overflowY: 'auto',
               transformOrigin: 'top center',
             }}
           >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {[...layers].reverse().map((lay, revIdx) => {
+              const actualIdx = layers.length - 1 - revIdx;
+              const isCur = actualIdx === activeLayerIndex;
+              return (
+                <button
+                  key={lay.id}
+                  type="button"
+                  className={`btn ${isCur ? 'primary' : ''}`}
+                  style={{
+                    border: 'none',
+                    justifyContent: 'space-between',
+                    padding: '4px 8px',
+                    fontSize: 12,
+                  }}
+                  onClick={() => {
+                    onSelectLayer(actualIdx);
+                    setPopoverMode(null);
+                  }}
+                >
+                    <span
+                      style={{
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {lay.name}
+                    </span>
+                    {!lay.visible && <EyeOff size={12} style={{ opacity: 0.65, flexShrink: 0 }} />}
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+      )}
+
+      {popoverMode === 'opacity' && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            right: 0,
+            zIndex: 40,
+          }}
+        >
+          <div
+            className="floating-card menu-pop"
+            style={{
+              width: 220,
+              padding: 10,
+              background: 'var(--surface)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              transformOrigin: 'top right',
+            }}
+          >
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>
               Opacity
             </span>
@@ -167,54 +252,6 @@ export function LayerPill({
             <span className="mono" style={{ fontSize: 11, minWidth: 32, textAlign: 'right' }}>
               {Math.round(activeLayer.opacity * 100)}%
             </span>
-          </div>
-
-          {layers.length > 1 && (
-            <div
-              style={{
-                borderTop: '1px solid var(--border)',
-                paddingTop: 6,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 2,
-                maxHeight: 150,
-                overflowY: 'auto',
-              }}
-            >
-              {[...layers].reverse().map((lay, revIdx) => {
-                const actualIdx = layers.length - 1 - revIdx;
-                const isCur = actualIdx === activeLayerIndex;
-                return (
-                  <button
-                    key={lay.id}
-                    type="button"
-                    className={`btn ${isCur ? 'primary' : ''}`}
-                    style={{
-                      border: 'none',
-                      justifyContent: 'space-between',
-                      padding: '4px 8px',
-                      fontSize: 12,
-                    }}
-                    onClick={() => {
-                      onSelectLayer(actualIdx);
-                      setOpen(false);
-                    }}
-                  >
-                    <span
-                      style={{
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {lay.name}
-                    </span>
-                    {!lay.visible && <EyeOff size={12} style={{ opacity: 0.65, flexShrink: 0 }} />}
-                  </button>
-                );
-              })}
-              </div>
-            )}
           </div>
         </div>
       )}

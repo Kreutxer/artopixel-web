@@ -501,6 +501,7 @@ export function MainMenu({
 
           {filteredProjects.map((p) => {
             const frameCount = p.frames?.length ?? 1;
+            const canvasCount = p.canvases?.length ?? 1;
             const menuOpen = openMenuId === p.id;
             return (
               <div
@@ -560,8 +561,9 @@ export function MainMenu({
                       color: 'var(--text-primary)',
                     }}
                   >
-                    {p.width}×{p.height}
-                    {frameCount > 1 ? ` · ${frameCount}F` : ''}
+                    {canvasCount > 1
+                      ? `${canvasCount} canvases`
+                      : `${p.width}×${p.height}${frameCount > 1 ? ` · ${frameCount}F` : ''}`}
                   </span>
 
                   <div

@@ -1,20 +1,28 @@
 import { buildApxlBlob, downloadProjectApxl } from './apxlFormat';
-import { PixelFrame, PixelLayer, PixelProject, SavedPalette } from './types';
+import { CanvasDoc, PixelFrame, PixelLayer, PixelProject, SavedPalette } from './types';
 
 const DB_NAME = 'artopixel_web_db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_PROJECTS = 'projects';
+const STORE_PROJECTS_META = 'projects_meta';
+const STORE_CANVASES = 'canvases';
 const STORE_PALETTES = 'palettes';
 const STORE_HANDLES = 'file_handles';
 const THEME_KEY = 'artopixel_theme';
 
-function openDb(): Promise<IDBDatabase> {
+let migrationPromise: Promise<void> | null = null;
+
+function openRawDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_PROJECTS)) {
-        db.createObjectStore(STORE_PROJECTS, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_PROJECTS_META)) {
+        db.createObjectStore(STORE_PROJECTS_META, { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains(STORE_CANVASES)) {
+        const canvasStore = db.createObjectStore(STORE_CANVASES, { keyPath: 'id' });
+        canvasStore.createIndex('by_projectId', 'projectId', { unique: false });
       }
       if (!db.objectStoreNames.contains(STORE_PALETTES)) {
         db.createObjectStore(STORE_PALETTES, { keyPath: 'id' });
@@ -26,6 +34,51 @@ function openDb(): Promise<IDBDatabase> {
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+async function migrateLegacyProjectsIfNeeded(db: IDBDatabase): Promise<void> {
+  if (!db.objectStoreNames.contains(STORE_PROJECTS)) return;
+  await new Promise<void>((resolve, reject) => {
+    const readTx = db.transaction(STORE_PROJECTS, 'readonly');
+    const getAllReq = readTx.objectStore(STORE_PROJECTS).getAll();
+    getAllReq.onsuccess = () => {
+      const legacy = (getAllReq.result as SerializedProject[]) ?? [];
+      if (legacy.length === 0) {
+        resolve();
+        return;
+      }
+      const writeTx = db.transaction(
+        [STORE_PROJECTS_META, STORE_CANVASES, STORE_PROJECTS],
+        'readwrite'
+      );
+      const metaStore = writeTx.objectStore(STORE_PROJECTS_META);
+      const canvasStore = writeTx.objectStore(STORE_CANVASES);
+      const legacyStore = writeTx.objectStore(STORE_PROJECTS);
+      for (const raw of legacy) {
+        const proj = deserializeProject(raw);
+        const { meta, canvases } = splitSerializedProject(proj);
+        metaStore.put(meta);
+        for (const c of canvases) {
+          canvasStore.put(c);
+        }
+        legacyStore.delete(raw.id);
+      }
+      writeTx.oncomplete = () => resolve();
+      writeTx.onerror = () => reject(writeTx.error);
+    };
+    getAllReq.onerror = () => reject(getAllReq.error);
+  });
+}
+
+async function openDb(): Promise<IDBDatabase> {
+  const db = await openRawDb();
+  if (!migrationPromise) {
+    migrationPromise = migrateLegacyProjectsIfNeeded(db).catch(() => {
+      migrationPromise = null;
+    });
+  }
+  await migrationPromise;
+  return db;
 }
 
 interface SerializedLayer {
@@ -45,6 +98,19 @@ interface SerializedFrame {
   activeLayerIndex: number;
 }
 
+interface SerializedCanvas {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  activeLayerIndex: number;
+  frames?: SerializedFrame[];
+  activeFrameIndex?: number;
+  fps?: number;
+  groups: PixelProject['groups'];
+  layers: SerializedLayer[];
+}
+
 interface SerializedProject {
   id: string;
   name: string;
@@ -54,6 +120,9 @@ interface SerializedProject {
   frames?: SerializedFrame[];
   activeFrameIndex?: number;
   fps?: number;
+  canvases?: SerializedCanvas[];
+  activeCanvasIndex?: number;
+  sharedPalette?: number[];
   referenceDataUrl: string | null;
   referenceVisible: boolean;
   updatedAt: number;
@@ -85,15 +154,24 @@ function deserializeLayer(l: SerializedLayer): PixelLayer {
   };
 }
 
-function serializeProject(p: PixelProject): SerializedProject {
-  const activeIdx = Math.max(0, Math.min(p.activeFrameIndex ?? 0, (p.frames?.length ?? 1) - 1));
-  const serializedFrames: SerializedFrame[] | undefined = p.frames?.map((f, idx) =>
+function serializeCanvasFields(c: {
+  width: number;
+  height: number;
+  layers: PixelLayer[];
+  groups: PixelProject['groups'];
+  activeLayerIndex: number;
+  frames?: PixelFrame[];
+  activeFrameIndex?: number;
+  fps?: number;
+}) {
+  const activeIdx = Math.max(0, Math.min(c.activeFrameIndex ?? 0, (c.frames?.length ?? 1) - 1));
+  const serializedFrames: SerializedFrame[] | undefined = c.frames?.map((f, idx) =>
     idx === activeIdx
       ? {
           id: f.id,
-          layers: p.layers.map(serializeLayer),
-          groups: p.groups,
-          activeLayerIndex: p.activeLayerIndex,
+          layers: c.layers.map(serializeLayer),
+          groups: c.groups,
+          activeLayerIndex: c.activeLayerIndex,
         }
       : {
           id: f.id,
@@ -102,6 +180,48 @@ function serializeProject(p: PixelProject): SerializedProject {
           activeLayerIndex: f.activeLayerIndex,
         }
   );
+  return {
+    serializedFrames,
+    activeIdx: c.frames ? activeIdx : undefined,
+    layers: c.layers.map(serializeLayer),
+  };
+}
+
+function serializeProject(p: PixelProject): SerializedProject {
+  const activeTop = serializeCanvasFields(p);
+  const activeCanvasIdx =
+    p.canvases && p.canvases.length > 0
+      ? Math.max(0, Math.min(p.activeCanvasIndex ?? 0, p.canvases.length - 1))
+      : undefined;
+  const serializedCanvases: SerializedCanvas[] | undefined = p.canvases?.map((c, idx) => {
+    if (idx === activeCanvasIdx) {
+      return {
+        id: c.id,
+        name: c.name,
+        width: p.width,
+        height: p.height,
+        activeLayerIndex: p.activeLayerIndex,
+        frames: activeTop.serializedFrames,
+        activeFrameIndex: activeTop.activeIdx,
+        fps: p.fps,
+        groups: p.groups,
+        layers: activeTop.layers,
+      };
+    }
+    const cf = serializeCanvasFields(c);
+    return {
+      id: c.id,
+      name: c.name,
+      width: c.width,
+      height: c.height,
+      activeLayerIndex: c.activeLayerIndex,
+      frames: cf.serializedFrames,
+      activeFrameIndex: cf.activeIdx,
+      fps: c.fps,
+      groups: c.groups,
+      layers: cf.layers,
+    };
+  });
 
   return {
     id: p.id,
@@ -109,18 +229,21 @@ function serializeProject(p: PixelProject): SerializedProject {
     width: p.width,
     height: p.height,
     activeLayerIndex: p.activeLayerIndex,
-    frames: serializedFrames,
-    activeFrameIndex: p.frames ? activeIdx : undefined,
+    frames: activeTop.serializedFrames,
+    activeFrameIndex: activeTop.activeIdx,
     fps: p.fps,
+    canvases: serializedCanvases,
+    activeCanvasIndex: activeCanvasIdx,
+    sharedPalette: p.sharedPalette,
     referenceDataUrl: p.referenceDataUrl,
     referenceVisible: p.referenceVisible,
     updatedAt: p.updatedAt,
     groups: p.groups,
-    layers: p.layers.map(serializeLayer),
+    layers: activeTop.layers,
   };
 }
 
-function deserializeProject(raw: SerializedProject): PixelProject {
+function deserializeCanvas(raw: SerializedCanvas): CanvasDoc {
   const frames: PixelFrame[] | undefined = raw.frames?.map((f) => ({
     id: f.id,
     layers: f.layers.map(deserializeLayer),
@@ -143,6 +266,64 @@ function deserializeProject(raw: SerializedProject): PixelProject {
     frames,
     activeFrameIndex,
     fps: raw.fps,
+    groups: activeFrame?.groups ?? raw.groups ?? [],
+    layers: activeFrame?.layers ?? raw.layers.map(deserializeLayer),
+  };
+}
+
+function deserializeProject(raw: SerializedProject): PixelProject {
+  const canvases: CanvasDoc[] | undefined = raw.canvases?.map(deserializeCanvas);
+  const activeCanvasIndex =
+    canvases && canvases.length > 0
+      ? Math.max(0, Math.min(raw.activeCanvasIndex ?? 0, canvases.length - 1))
+      : undefined;
+  const activeCanvas =
+    canvases && activeCanvasIndex !== undefined ? canvases[activeCanvasIndex] : undefined;
+
+  if (activeCanvas) {
+    return {
+      id: raw.id,
+      name: raw.name,
+      width: activeCanvas.width,
+      height: activeCanvas.height,
+      activeLayerIndex: activeCanvas.activeLayerIndex,
+      frames: activeCanvas.frames,
+      activeFrameIndex: activeCanvas.activeFrameIndex,
+      fps: activeCanvas.fps,
+      canvases,
+      activeCanvasIndex,
+      sharedPalette: raw.sharedPalette,
+      referenceDataUrl: raw.referenceDataUrl ?? null,
+      referenceVisible: raw.referenceVisible ?? true,
+      updatedAt: raw.updatedAt ?? Date.now(),
+      groups: activeCanvas.groups,
+      layers: activeCanvas.layers,
+    };
+  }
+
+  const frames: PixelFrame[] | undefined = raw.frames?.map((f) => ({
+    id: f.id,
+    layers: f.layers.map(deserializeLayer),
+    groups: f.groups ?? [],
+    activeLayerIndex: f.activeLayerIndex ?? 0,
+  }));
+  const activeFrameIndex =
+    frames && frames.length > 0
+      ? Math.max(0, Math.min(raw.activeFrameIndex ?? 0, frames.length - 1))
+      : undefined;
+  const activeFrame =
+    frames && activeFrameIndex !== undefined ? frames[activeFrameIndex] : undefined;
+
+  return {
+    id: raw.id,
+    name: raw.name,
+    width: raw.width,
+    height: raw.height,
+    activeLayerIndex: activeFrame?.activeLayerIndex ?? raw.activeLayerIndex,
+    frames,
+    activeFrameIndex,
+    fps: raw.fps,
+    sharedPalette: raw.sharedPalette,
     referenceDataUrl: raw.referenceDataUrl ?? null,
     referenceVisible: raw.referenceVisible ?? true,
     updatedAt: raw.updatedAt ?? Date.now(),
@@ -160,13 +341,122 @@ export function saveThemePreference(theme: 'light' | 'dark'): void {
   localStorage.setItem(THEME_KEY, theme);
 }
 
-export async function loadAllProjects(): Promise<PixelProject[]> {
+export interface SerializedProjectMeta {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  activeCanvasIndex?: number;
+  canvasIds: string[];
+  sharedPalette?: number[];
+  referenceDataUrl: string | null;
+  referenceVisible: boolean;
+  updatedAt: number;
+  version: number;
+}
+
+export interface SerializedCanvasRecord extends SerializedCanvas {
+  projectId: string;
+  updatedAt: number;
+  version: number;
+  dirty: boolean;
+}
+
+function splitSerializedProject(
+  p: PixelProject,
+  prevVersions?: Map<string, number>,
+  prevMetaVersion = 0
+): {
+  meta: SerializedProjectMeta;
+  canvases: SerializedCanvasRecord[];
+  activeCanvasId: string;
+} {
+  const now = p.updatedAt || Date.now();
+  const full = serializeProject(p);
+  const rawCanvases: SerializedCanvas[] =
+    full.canvases && full.canvases.length > 0
+      ? full.canvases
+      : [
+          {
+            id: `${p.id}_c0`,
+            name: p.name,
+            width: p.width,
+            height: p.height,
+            activeLayerIndex: p.activeLayerIndex,
+            frames: full.frames,
+            activeFrameIndex: full.activeFrameIndex,
+            fps: p.fps,
+            groups: p.groups,
+            layers: full.layers,
+          },
+        ];
+
+  const activeIdx = Math.max(0, Math.min(full.activeCanvasIndex ?? 0, rawCanvases.length - 1));
+  const activeCanvasId = rawCanvases[activeIdx].id;
+
+  const canvases: SerializedCanvasRecord[] = rawCanvases.map((c) => ({
+    ...c,
+    projectId: p.id,
+    updatedAt: now,
+    version: (prevVersions?.get(c.id) ?? 0) + 1,
+    dirty: true,
+  }));
+
+  const meta: SerializedProjectMeta = {
+    id: p.id,
+    name: p.name,
+    width: p.width,
+    height: p.height,
+    activeCanvasIndex: activeIdx,
+    canvasIds: rawCanvases.map((c) => c.id),
+    sharedPalette: p.sharedPalette,
+    referenceDataUrl: p.referenceDataUrl,
+    referenceVisible: p.referenceVisible,
+    updatedAt: now,
+    version: prevMetaVersion + 1,
+  };
+
+  return { meta, canvases, activeCanvasId };
+}
+
+function assembleProjectFromSplit(
+  meta: SerializedProjectMeta,
+  canvasMap: Map<string, SerializedCanvasRecord>
+): PixelProject | null {
+  const ordered: SerializedCanvas[] = [];
+  for (const cid of meta.canvasIds) {
+    const rec = canvasMap.get(cid);
+    if (rec) ordered.push(rec);
+  }
+  if (ordered.length === 0) return null;
+  const first = ordered[0];
+  return deserializeProject({
+    id: meta.id,
+    name: meta.name,
+    width: first.width,
+    height: first.height,
+    activeLayerIndex: first.activeLayerIndex,
+    frames: first.frames,
+    activeFrameIndex: first.activeFrameIndex,
+    fps: first.fps,
+    canvases: ordered,
+    activeCanvasIndex: meta.activeCanvasIndex ?? 0,
+    sharedPalette: meta.sharedPalette,
+    referenceDataUrl: meta.referenceDataUrl,
+    referenceVisible: meta.referenceVisible,
+    updatedAt: meta.updatedAt,
+    groups: first.groups,
+    layers: first.layers,
+  });
+}
+
+export async function loadAllProjectMetas(): Promise<SerializedProjectMeta[]> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_PROJECTS, 'readonly');
-    const req = tx.objectStore(STORE_PROJECTS).getAll();
+    const tx = db.transaction(STORE_PROJECTS_META, 'readonly');
+    const req = tx.objectStore(STORE_PROJECTS_META).getAll();
     req.onsuccess = () => {
-      const list = (req.result as SerializedProject[]).map(deserializeProject);
+      const list = (req.result as SerializedProjectMeta[]) ?? [];
       list.sort((a, b) => b.updatedAt - a.updatedAt);
       resolve(list);
     };
@@ -174,12 +464,111 @@ export async function loadAllProjects(): Promise<PixelProject[]> {
   });
 }
 
+export async function loadCanvasById(canvasId: string): Promise<CanvasDoc | null> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_CANVASES, 'readonly');
+    const req = tx.objectStore(STORE_CANVASES).get(canvasId);
+    req.onsuccess = () => {
+      const raw = req.result as SerializedCanvasRecord | undefined;
+      resolve(raw ? deserializeCanvas(raw) : null);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+export async function loadAllProjects(): Promise<PixelProject[]> {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_PROJECTS_META, STORE_CANVASES], 'readonly');
+    const metaReq = tx.objectStore(STORE_PROJECTS_META).getAll();
+    const canvasReq = tx.objectStore(STORE_CANVASES).getAll();
+    tx.oncomplete = () => {
+      const metas = (metaReq.result as SerializedProjectMeta[]) ?? [];
+      const canvasRows = (canvasReq.result as SerializedCanvasRecord[]) ?? [];
+      const canvasMap = new Map<string, SerializedCanvasRecord>();
+      for (const c of canvasRows) {
+        canvasMap.set(c.id, c);
+      }
+      const list: PixelProject[] = [];
+      for (const m of metas) {
+        const proj = assembleProjectFromSplit(m, canvasMap);
+        if (proj) list.push(proj);
+      }
+      list.sort((a, b) => b.updatedAt - a.updatedAt);
+      resolve(list);
+    };
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export async function saveProject(project: PixelProject): Promise<void> {
   project.updatedAt = Date.now();
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_PROJECTS, 'readwrite');
-    tx.objectStore(STORE_PROJECTS).put(serializeProject(project));
+    const tx = db.transaction([STORE_PROJECTS_META, STORE_CANVASES], 'readwrite');
+    const metaStore = tx.objectStore(STORE_PROJECTS_META);
+    const canvasStore = tx.objectStore(STORE_CANVASES);
+
+    const existingKeysReq = canvasStore.index('by_projectId').getAllKeys(project.id);
+    const existingMetaReq = metaStore.get(project.id);
+
+    existingKeysReq.onsuccess = () => {
+      const prevMeta = existingMetaReq.result as SerializedProjectMeta | undefined;
+      const { meta, canvases } = splitSerializedProject(project, undefined, prevMeta?.version ?? 0);
+      metaStore.put(meta);
+      const keepIds = new Set(canvases.map((c) => c.id));
+      for (const oldKey of existingKeysReq.result as IDBValidKey[]) {
+        if (!keepIds.has(String(oldKey))) {
+          canvasStore.delete(oldKey);
+        }
+      }
+      for (const c of canvases) {
+        canvasStore.put(c);
+      }
+    };
+
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+export async function saveActiveCanvas(project: PixelProject): Promise<void> {
+  project.updatedAt = Date.now();
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([STORE_PROJECTS_META, STORE_CANVASES], 'readwrite');
+    const metaStore = tx.objectStore(STORE_PROJECTS_META);
+    const canvasStore = tx.objectStore(STORE_CANVASES);
+
+    const existingKeysReq = canvasStore.index('by_projectId').getAllKeys(project.id);
+    const existingMetaReq = metaStore.get(project.id);
+
+    existingKeysReq.onsuccess = () => {
+      const prevMeta = existingMetaReq.result as SerializedProjectMeta | undefined;
+      const { meta, canvases, activeCanvasId } = splitSerializedProject(
+        project,
+        undefined,
+        prevMeta?.version ?? 0
+      );
+      metaStore.put(meta);
+
+      const existingIdSet = new Set((existingKeysReq.result as IDBValidKey[]).map(String));
+      const targetIdSet = new Set(canvases.map((c) => c.id));
+
+      for (const oldKey of existingIdSet) {
+        if (!targetIdSet.has(oldKey)) {
+          canvasStore.delete(oldKey);
+        }
+      }
+
+      for (const c of canvases) {
+        if (c.id === activeCanvasId || !existingIdSet.has(c.id)) {
+          canvasStore.put(c);
+        }
+      }
+    };
+
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -188,9 +577,19 @@ export async function saveProject(project: PixelProject): Promise<void> {
 export async function deleteProject(id: string): Promise<void> {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction([STORE_PROJECTS, STORE_HANDLES], 'readwrite');
-    tx.objectStore(STORE_PROJECTS).delete(id);
+    const tx = db.transaction(
+      [STORE_PROJECTS_META, STORE_CANVASES, STORE_HANDLES],
+      'readwrite'
+    );
+    tx.objectStore(STORE_PROJECTS_META).delete(id);
     tx.objectStore(STORE_HANDLES).delete(id);
+    const canvasStore = tx.objectStore(STORE_CANVASES);
+    const keysReq = canvasStore.index('by_projectId').getAllKeys(id);
+    keysReq.onsuccess = () => {
+      for (const key of keysReq.result as IDBValidKey[]) {
+        canvasStore.delete(key);
+      }
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

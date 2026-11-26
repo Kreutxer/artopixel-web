@@ -118,6 +118,43 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
 
   const frameRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
   const frameSnapRef = useRef<Array<{ idx: number; midX: number }>>([]);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+  const scrollTargetRef = useRef<number | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
+    };
+  }, []);
+
+  const smoothScrollBy = (delta: number) => {
+    const el = trackRef.current;
+    if (!el) return;
+    const maxScroll = el.scrollWidth - el.clientWidth;
+    const cur = scrollTargetRef.current ?? el.scrollLeft;
+    scrollTargetRef.current = Math.max(0, Math.min(maxScroll, cur + delta));
+    if (scrollRafRef.current === null) {
+      const step = () => {
+        const target = scrollTargetRef.current;
+        const node = trackRef.current;
+        if (target === null || !node) {
+          scrollRafRef.current = null;
+          return;
+        }
+        const diff = target - node.scrollLeft;
+        if (Math.abs(diff) < 0.5) {
+          node.scrollLeft = target;
+          scrollTargetRef.current = null;
+          scrollRafRef.current = null;
+          return;
+        }
+        node.scrollLeft += diff * 0.22;
+        scrollRafRef.current = requestAnimationFrame(step);
+      };
+      scrollRafRef.current = requestAnimationFrame(step);
+    }
+  };
   const [dragReorder, setDragReorder] = useState<{
     fromIndex: number;
     toIndex: number;
@@ -256,7 +293,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            background: 'var(--surface-elevated)',
+            background: 'var(--surface)',
           }}
         >
           <div
@@ -276,9 +313,9 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             alignItems: 'center',
             justifyContent: 'space-between',
             gap: 8,
-            padding: '4px 12px 6px',
+            padding: '2px 12px 8px',
             borderBottom: '1px solid var(--border)',
-            background: 'var(--surface-elevated)',
+            background: 'var(--surface)',
             flexWrap: 'wrap',
             flexShrink: 0,
           }}
@@ -377,6 +414,9 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
             <span
               className="mono"
               style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                height: 30,
                 fontSize: 11.5,
                 color: 'var(--text-muted)',
                 paddingLeft: 4,
@@ -433,14 +473,23 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
 
         {/* Timeline Track */}
         <div
+          ref={trackRef}
+          onWheel={(e) => {
+            const el = e.currentTarget;
+            if (el.scrollWidth > el.clientWidth && e.deltaY !== 0) {
+              e.preventDefault();
+              smoothScrollBy(e.deltaY * 0.55);
+            }
+          }}
           style={{
             flex: 1,
             display: 'flex',
             alignItems: 'center',
             overflowX: 'auto',
             overflowY: 'hidden',
-            padding: '6px 12px',
-            gap: 6,
+            padding: '0 8px',
+            gap: 0,
+            background: 'var(--surface-elevated)',
           }}
         >
           {frames.map((frame, idx) => {
@@ -454,8 +503,21 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
               dragReorder.fromIndex !== idx;
 
             return (
-              <button
+              <div
                 key={frame.id}
+                style={{
+                  height: '100%',
+                  display: 'flex',
+                  alignItems: 'center',
+                  padding: '0 6px',
+                  flexShrink: 0,
+                  background:
+                    idx % 2 === 0
+                      ? 'var(--surface-elevated)'
+                      : 'color-mix(in srgb, var(--text-muted) 11%, var(--surface-elevated))',
+                }}
+              >
+              <button
                 ref={(el) => {
                   if (el) frameRefs.current.set(idx, el);
                   else frameRefs.current.delete(idx);
@@ -524,20 +586,17 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                 style={{
                   position: 'relative',
                   display: 'flex',
-                  flexDirection: 'column',
                   alignItems: 'center',
-                  gap: 4,
-                  padding: '4px 6px 5px',
-                  minWidth: thumbSize + 14,
+                  justifyContent: 'center',
+                  padding: 0,
+                  overflow: 'hidden',
                   borderRadius: 8,
                   border: isDropTarget
                     ? '2px dashed var(--accent)'
                     : isActive
                       ? '2px solid var(--accent)'
                       : '1px solid var(--border)',
-                  background: isActive
-                    ? 'var(--accent-container)'
-                    : 'var(--surface-elevated)',
+                  background: 'var(--surface)',
                   color: 'var(--text-primary)',
                   cursor: isDraggingThis ? 'grabbing' : 'pointer',
                   flexShrink: 0,
@@ -549,39 +608,6 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                   touchAction: 'none',
                 }}
               >
-                {/* Ruler number + onion indicator */}
-                <div
-                  style={{
-                    width: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    fontSize: 10,
-                    lineHeight: 1,
-                  }}
-                >
-                  <span
-                    className="mono"
-                    style={{
-                      fontWeight: isActive ? 700 : 500,
-                      color: isActive ? 'var(--accent)' : 'var(--text-muted)',
-                    }}
-                  >
-                    {idx + 1}
-                  </span>
-                  {(isPrevOnion || isNextOnion) && (
-                    <span
-                      style={{
-                        width: 6,
-                        height: 6,
-                        borderRadius: '50%',
-                        background: isPrevOnion ? 'var(--onion-prev)' : 'var(--onion-next)',
-                      }}
-                      title={isPrevOnion ? 'Previous onion skin' : 'Next onion skin'}
-                    />
-                  )}
-                </div>
-
                 <FrameThumb
                   projectWidth={project.width}
                   projectHeight={project.height}
@@ -590,7 +616,47 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                   isActive={isActive}
                   size={thumbSize}
                 />
+
+                {/* Overlaid frame number badge */}
+                <span
+                  className="mono"
+                  style={{
+                    position: 'absolute',
+                    top: 4,
+                    left: 4,
+                    fontSize: 10,
+                    lineHeight: 1,
+                    fontWeight: isActive ? 700 : 600,
+                    padding: '2px 5px',
+                    borderRadius: 4,
+                    background: isActive
+                      ? 'var(--accent)'
+                      : 'color-mix(in srgb, var(--surface) 88%, transparent)',
+                    color: isActive ? 'var(--on-accent)' : 'var(--text-primary)',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {idx + 1}
+                </span>
+
+                {(isPrevOnion || isNextOnion) && (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: 5,
+                      right: 5,
+                      width: 7,
+                      height: 7,
+                      borderRadius: '50%',
+                      background: isPrevOnion ? 'var(--onion-prev)' : 'var(--onion-next)',
+                      boxShadow: '0 0 0 1.5px var(--surface)',
+                      pointerEvents: 'none',
+                    }}
+                    title={isPrevOnion ? 'Previous onion skin' : 'Next onion skin'}
+                  />
+                )}
               </button>
+              </div>
             );
           })}
 
@@ -606,7 +672,8 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
               alignItems: 'center',
               justifyContent: 'center',
               minWidth: Math.max(44, Math.round(thumbSize * 0.75)),
-              height: thumbSize + 25,
+              height: thumbSize + 4,
+              marginLeft: 6,
               borderRadius: 8,
               border: '1px dashed var(--border)',
               background: 'transparent',

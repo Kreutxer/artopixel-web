@@ -38,6 +38,8 @@ import {
   applyOutline,
   bresenham,
   brushOffsets,
+  createCanvasDoc,
+  ensureProjectCanvases,
   ensureProjectFrames,
   evalDeCasteljau,
   forEachMirrored,
@@ -51,6 +53,7 @@ import { PRESET_PALETTES, argbToCss } from '../engine/paletteQuantizer';
 import {
   renderCompositeToCanvas,
   renderFrameToCanvas,
+  saveActiveCanvas,
   saveProject,
 } from '../engine/storage';
 import { importProjectFromFile } from '../engine/importer';
@@ -73,6 +76,7 @@ import { LayersPanel } from './LayersPanel';
 import { MinimapPanel } from './MinimapPanel';
 import { TimelinePanel } from './TimelinePanel';
 import { CanvasContextMenu } from './editor/CanvasContextMenu';
+import { CanvasTabsBar } from './editor/CanvasTabsBar';
 import { ExportModal } from './editor/ExportModal';
 import { LayerPill } from './editor/LayerPill';
 import { ReplaceColorModal } from './editor/ReplaceColorModal';
@@ -119,12 +123,24 @@ export function EditorScreen({
   onBack: () => void;
 }) {
   const [project, setProject] = useState<PixelProject>(() =>
-    ensureProjectFrames(initialProject)
+    ensureProjectCanvases(initialProject)
+  );
+  const [openCanvasIds, setOpenCanvasIds] = useState<string[]>(() =>
+    (ensureProjectCanvases(initialProject).canvases ?? []).map((c) => c.id)
   );
   const [isPlaying, setIsPlaying] = useState(false);
   const [onionSkin, setOnionSkin] = useState(false);
-  const [timelineOpen, setTimelineOpen] = useState(true);
-  const [timelineHeight, setTimelineHeight] = useState(124);
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [tabsOpen, setTabsOpen] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('artopixel_tabs_open_v1');
+      if (saved !== null) return saved !== 'false';
+    } catch {
+      // ignore
+    }
+    return true;
+  });
+  const [timelineHeight, setTimelineHeight] = useState(156);
   const [timelineResizing, setTimelineResizing] = useState(false);
   const [layersWidth, setLayersWidth] = useState(276);
   const [layersResizing, setLayersResizing] = useState(false);
@@ -160,7 +176,9 @@ export function EditorScreen({
   const [brushSize, setBrushSize] = useState(1);
   const [previewingSize, setPreviewingSize] = useState(false);
   const [activeColor, setActiveColor] = useState<number>(0xff000000);
-  const [palette, setPalette] = useState<number[]>(PRESET_PALETTES[0].colors);
+  const [palette, setPalette] = useState<number[]>(
+    () => initialProject.sharedPalette ?? PRESET_PALETTES[0].colors
+  );
   const [showMinimap, setShowMinimap] = useState(true);
   const [gridMode, setGridMode] = useState<GridMode>('tile');
   const [lastGridMode, setLastGridMode] = useState<Exclude<GridMode, 'off'>>('tile');
@@ -188,6 +206,7 @@ export function EditorScreen({
     return typeof window !== 'undefined' ? window.innerWidth >= 768 : true;
   });
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [collapsedHudLeft, setCollapsedHudLeft] = useState(180);
   const [hiddenLayerToast, setHiddenLayerToast] = useState(false);
   const [layerFinderToast, setLayerFinderToast] = useState<string | null>(null);
   const [showHelpModal, setShowHelpModal] = useState(false);
@@ -253,6 +272,8 @@ export function EditorScreen({
 
   const undoRef = useRef<HistoryAction[]>([]);
   const redoRef = useRef<HistoryAction[]>([]);
+  const canvasHistoryRef = useRef<Map<string, { undo: HistoryAction[]; redo: HistoryAction[] }>>(new Map());
+  const canvasViewportRef = useRef<Map<string, { zoom: number; baseZoom: number; pan: { x: number; y: number } }>>(new Map());
   const [, forceHistoryTick] = useState(0);
 
   const viewportRef = useRef<HTMLCanvasElement | null>(null);
@@ -352,7 +373,7 @@ export function EditorScreen({
     setSaveStatus('saving');
     const t = setTimeout(async () => {
       try {
-        await saveProject(latestProjectRef.current);
+        await saveActiveCanvas(latestProjectRef.current);
         setSaveStatus('saved');
       } catch {
         setSaveStatus('error');
@@ -364,6 +385,14 @@ export function EditorScreen({
   useEffect(() => {
     const canvas = viewportRef.current;
     if (!canvas) return;
+    const activeCanvasId = project.canvases?.[project.activeCanvasIndex ?? 0]?.id;
+    const savedVp = activeCanvasId ? canvasViewportRef.current.get(activeCanvasId) : undefined;
+    if (savedVp) {
+      setBaseZoom(savedVp.baseZoom);
+      setZoom(savedVp.zoom);
+      setPan(savedVp.pan);
+      return;
+    }
     const rect = canvas.getBoundingClientRect();
     const fitScale = Math.min(
       (rect.width * 0.72) / project.width,
@@ -377,7 +406,7 @@ export function EditorScreen({
       y: (rect.height - project.height * initialZoom) / 2,
     });
     setMirrorPos({ x: project.width / 2, y: project.height / 2 });
-  }, [project.id, project.width, project.height]);
+  }, [project.id, project.activeCanvasIndex, project.width, project.height]);
 
   const setProjectSync = useCallback(
     (updater: React.SetStateAction<PixelProject>) => {
@@ -385,20 +414,259 @@ export function EditorScreen({
         const next = typeof updater === 'function' ? updater(prev) : updater;
         const frames = next.frames;
         const fIdx = next.activeFrameIndex ?? 0;
+        let syncedFrames = frames;
         if (frames && frames[fIdx]) {
-          const nextFrames = [...frames];
-          nextFrames[fIdx] = {
-            ...nextFrames[fIdx],
+          syncedFrames = [...frames];
+          syncedFrames[fIdx] = {
+            ...syncedFrames[fIdx],
             layers: next.layers,
             groups: next.groups,
             activeLayerIndex: next.activeLayerIndex,
           };
-          return { ...next, frames: nextFrames };
         }
-        return next;
+        const canvases = next.canvases;
+        const cIdx = next.activeCanvasIndex ?? 0;
+        let syncedCanvases = canvases;
+        if (canvases && canvases[cIdx]) {
+          syncedCanvases = [...canvases];
+          syncedCanvases[cIdx] = {
+            ...syncedCanvases[cIdx],
+            width: next.width,
+            height: next.height,
+            layers: next.layers,
+            groups: next.groups,
+            activeLayerIndex: next.activeLayerIndex,
+            frames: syncedFrames,
+            activeFrameIndex: next.activeFrameIndex,
+            fps: next.fps,
+          };
+        }
+        return {
+          ...next,
+          frames: syncedFrames,
+          canvases: syncedCanvases,
+        };
       });
     },
     []
+  );
+
+  const switchCanvas = useCallback(
+    (targetIdx: number) => {
+      const canvases = project.canvases ?? [];
+      const curIdx = project.activeCanvasIndex ?? 0;
+      if (targetIdx === curIdx || targetIdx < 0 || targetIdx >= canvases.length) return;
+      setIsPlaying(false);
+      if (floatingSelRef.current) {
+        commitFloatingSelection();
+      }
+      const curCanvas = canvases[curIdx];
+      if (curCanvas) {
+        canvasHistoryRef.current.set(curCanvas.id, {
+          undo: [...undoRef.current],
+          redo: [...redoRef.current],
+        });
+        canvasViewportRef.current.set(curCanvas.id, { zoom, baseZoom, pan });
+      }
+      const nextCanvases = [...canvases];
+      if (nextCanvases[curIdx]) {
+        const fIdx = project.activeFrameIndex ?? 0;
+        const syncedFrames = project.frames ? [...project.frames] : undefined;
+        if (syncedFrames && syncedFrames[fIdx]) {
+          syncedFrames[fIdx] = {
+            ...syncedFrames[fIdx],
+            layers: project.layers,
+            groups: project.groups,
+            activeLayerIndex: project.activeLayerIndex,
+          };
+        }
+        nextCanvases[curIdx] = {
+          ...nextCanvases[curIdx],
+          width: project.width,
+          height: project.height,
+          layers: project.layers,
+          groups: project.groups,
+          activeLayerIndex: project.activeLayerIndex,
+          frames: syncedFrames,
+          activeFrameIndex: project.activeFrameIndex,
+          fps: project.fps,
+        };
+      }
+      const target = nextCanvases[targetIdx];
+      const targetHist = canvasHistoryRef.current.get(target.id);
+      undoRef.current = targetHist ? [...targetHist.undo] : [];
+      redoRef.current = targetHist ? [...targetHist.redo] : [];
+      forceHistoryTick((t) => t + 1);
+      setSelection(null);
+      floatingSelRef.current = null;
+      setProject((prev) =>
+        ensureProjectCanvases({
+          ...prev,
+          canvases: nextCanvases,
+          activeCanvasIndex: targetIdx,
+        })
+      );
+    },
+    [project, zoom, baseZoom, pan]
+  );
+
+  const hideCanvasTab = useCallback(
+    (id: string) => {
+      if (openCanvasIds.length <= 1) return;
+      const canvases = project.canvases ?? [];
+      const curCanvas = canvases[project.activeCanvasIndex ?? 0];
+      const remainingIds = openCanvasIds.filter((oid) => oid !== id);
+      setOpenCanvasIds(remainingIds);
+      if (curCanvas?.id === id) {
+        const nextIdx = canvases.findIndex((c) => remainingIds.includes(c.id));
+        if (nextIdx >= 0) {
+          switchCanvas(nextIdx);
+        }
+      }
+    },
+    [openCanvasIds, project.canvases, project.activeCanvasIndex, switchCanvas]
+  );
+
+  const openCanvasTab = useCallback((id: string) => {
+    setOpenCanvasIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
+
+  const addCanvasTab = useCallback(
+    (name: string, width: number, height: number) => {
+      setIsPlaying(false);
+      if (floatingSelRef.current) {
+        commitFloatingSelection();
+      }
+      const canvases = project.canvases ?? [];
+      const curIdx = project.activeCanvasIndex ?? 0;
+      const curCanvas = canvases[curIdx];
+      if (curCanvas) {
+        canvasHistoryRef.current.set(curCanvas.id, {
+          undo: [...undoRef.current],
+          redo: [...redoRef.current],
+        });
+        canvasViewportRef.current.set(curCanvas.id, { zoom, baseZoom, pan });
+      }
+      const nextCanvases = [...canvases];
+      if (nextCanvases[curIdx]) {
+        const fIdx = project.activeFrameIndex ?? 0;
+        const syncedFrames = project.frames ? [...project.frames] : undefined;
+        if (syncedFrames && syncedFrames[fIdx]) {
+          syncedFrames[fIdx] = {
+            ...syncedFrames[fIdx],
+            layers: project.layers,
+            groups: project.groups,
+            activeLayerIndex: project.activeLayerIndex,
+          };
+        }
+        nextCanvases[curIdx] = {
+          ...nextCanvases[curIdx],
+          width: project.width,
+          height: project.height,
+          layers: project.layers,
+          groups: project.groups,
+          activeLayerIndex: project.activeLayerIndex,
+          frames: syncedFrames,
+          activeFrameIndex: project.activeFrameIndex,
+          fps: project.fps,
+        };
+      }
+      const created = createCanvasDoc(name, width, height);
+      nextCanvases.push(created);
+      setOpenCanvasIds((prev) => [...prev, created.id]);
+      undoRef.current = [];
+      redoRef.current = [];
+      forceHistoryTick((t) => t + 1);
+      setSelection(null);
+      floatingSelRef.current = null;
+      setProject((prev) =>
+        ensureProjectCanvases({
+          ...prev,
+          canvases: nextCanvases,
+          activeCanvasIndex: nextCanvases.length - 1,
+        })
+      );
+      setRevision((r) => r + 1);
+    },
+    [project, zoom, baseZoom, pan]
+  );
+
+  const renameCanvasTab = useCallback((idx: number, name: string) => {
+    setProject((prev) => {
+      const canvases = prev.canvases ?? [];
+      if (!canvases[idx]) return prev;
+      const next = [...canvases];
+      next[idx] = { ...next[idx], name };
+      return { ...prev, canvases: next };
+    });
+    setRevision((r) => r + 1);
+  }, []);
+
+  const reorderCanvasTab = useCallback((fromIdx: number, toIdx: number) => {
+    if (fromIdx === toIdx) return;
+    setProject((prev) => {
+      const canvases = prev.canvases ?? [];
+      if (
+        fromIdx < 0 ||
+        toIdx < 0 ||
+        fromIdx >= canvases.length ||
+        toIdx >= canvases.length
+      ) {
+        return prev;
+      }
+      const curIdx = prev.activeCanvasIndex ?? 0;
+      const activeId = canvases[curIdx]?.id;
+      const next = [...canvases];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      const nextActiveIdx = Math.max(0, next.findIndex((c) => c.id === activeId));
+      return {
+        ...prev,
+        canvases: next,
+        activeCanvasIndex: nextActiveIdx,
+      };
+    });
+    setRevision((r) => r + 1);
+  }, []);
+
+  const deleteCanvasTab = useCallback(
+    (idx: number) => {
+      const canvases = project.canvases ?? [];
+      if (canvases.length <= 1 || idx < 0 || idx >= canvases.length) return;
+      setIsPlaying(false);
+      const removed = canvases[idx];
+      if (removed) {
+        canvasHistoryRef.current.delete(removed.id);
+        canvasViewportRef.current.delete(removed.id);
+        setOpenCanvasIds((prev) => prev.filter((id) => id !== removed.id));
+      }
+      const curIdx = project.activeCanvasIndex ?? 0;
+      const nextCanvases = canvases.filter((_, i) => i !== idx);
+      const nextActiveIdx =
+        idx === curIdx
+          ? Math.min(idx, nextCanvases.length - 1)
+          : idx < curIdx
+            ? curIdx - 1
+            : curIdx;
+      const target = nextCanvases[nextActiveIdx];
+      if (idx === curIdx) {
+        const targetHist = canvasHistoryRef.current.get(target.id);
+        undoRef.current = targetHist ? [...targetHist.undo] : [];
+        redoRef.current = targetHist ? [...targetHist.redo] : [];
+        forceHistoryTick((t) => t + 1);
+        setSelection(null);
+        floatingSelRef.current = null;
+      }
+      setProject((prev) =>
+        ensureProjectCanvases({
+          ...prev,
+          canvases: nextCanvases,
+          activeCanvasIndex: nextActiveIdx,
+        })
+      );
+      setRevision((r) => r + 1);
+    },
+    [project.canvases, project.activeCanvasIndex]
   );
 
   const switchFrame = useCallback((targetIdx: number) => {
@@ -1332,13 +1600,85 @@ export function EditorScreen({
       try {
         const imported = await importProjectFromFile(file);
         if (importModeRef.current === 'open') {
-          await saveProject(imported);
+          setIsPlaying(false);
+          if (floatingSelRef.current) {
+            commitFloatingSelection();
+          }
+          const canvases = project.canvases ?? [];
+          const curIdx = project.activeCanvasIndex ?? 0;
+          const curCanvas = canvases[curIdx];
+          if (curCanvas) {
+            canvasHistoryRef.current.set(curCanvas.id, {
+              undo: [...undoRef.current],
+              redo: [...redoRef.current],
+            });
+            canvasViewportRef.current.set(curCanvas.id, { zoom, baseZoom, pan });
+          }
+          const nextCanvases = [...canvases];
+          if (nextCanvases[curIdx]) {
+            const fIdx = project.activeFrameIndex ?? 0;
+            const syncedFrames = project.frames ? [...project.frames] : undefined;
+            if (syncedFrames && syncedFrames[fIdx]) {
+              syncedFrames[fIdx] = {
+                ...syncedFrames[fIdx],
+                layers: project.layers,
+                groups: project.groups,
+                activeLayerIndex: project.activeLayerIndex,
+              };
+            }
+            nextCanvases[curIdx] = {
+              ...nextCanvases[curIdx],
+              width: project.width,
+              height: project.height,
+              layers: project.layers,
+              groups: project.groups,
+              activeLayerIndex: project.activeLayerIndex,
+              frames: syncedFrames,
+              activeFrameIndex: project.activeFrameIndex,
+              fps: project.fps,
+            };
+          }
+          const importedTabs =
+            imported.canvases && imported.canvases.length > 0
+              ? imported.canvases.map((c) => ({
+                  ...c,
+                  id:
+                    typeof crypto !== 'undefined' && crypto.randomUUID
+                      ? crypto.randomUUID()
+                      : `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                }))
+              : [
+                  {
+                    id:
+                      typeof crypto !== 'undefined' && crypto.randomUUID
+                        ? crypto.randomUUID()
+                        : `c_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                    name: imported.name || 'Imported',
+                    width: imported.width,
+                    height: imported.height,
+                    layers: imported.layers,
+                    groups: imported.groups,
+                    activeLayerIndex: imported.activeLayerIndex,
+                    frames: imported.frames,
+                    activeFrameIndex: imported.activeFrameIndex,
+                    fps: imported.fps,
+                  },
+                ];
+          const firstNewIdx = nextCanvases.length;
+          nextCanvases.push(...importedTabs);
+          setOpenCanvasIds((prev) => [...prev, ...importedTabs.map((t) => t.id)]);
           undoRef.current = [];
           redoRef.current = [];
           forceHistoryTick((t) => t + 1);
-          setProject(imported);
           setSelection(null);
           floatingSelRef.current = null;
+          setProject((prev) =>
+            ensureProjectCanvases({
+              ...prev,
+              canvases: nextCanvases,
+              activeCanvasIndex: firstNewIdx,
+            })
+          );
           setRevision((r) => r + 1);
           return;
         }
@@ -2485,7 +2825,7 @@ export function EditorScreen({
           padding: '0 10px',
           gap: 10,
           position: 'relative',
-          zIndex: 35,
+          zIndex: 45,
         }}
       >
         <input
@@ -2613,7 +2953,7 @@ export function EditorScreen({
                             importInputRef.current?.click();
                           }}
                         >
-                          Open as New Project
+                          Import as New Tab
                         </button>
                       </div>
                     </div>
@@ -2811,36 +3151,6 @@ export function EditorScreen({
               <span>
                 {project.width}×{project.height}
               </span>
-              <button
-                type="button"
-                onClick={() => {
-                  const canvas = viewportRef.current;
-                  if (!canvas) return;
-                  const rect = canvas.getBoundingClientRect();
-                  setZoom(baseZoom);
-                  setPan({
-                    x: (rect.width - project.width * baseZoom) / 2,
-                    y: (rect.height - project.height * baseZoom) / 2,
-                  });
-                }}
-                title="Click to reset zoom to 100%"
-                style={{
-                  background: 'var(--surface-elevated)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 5,
-                  padding: '2px 6px',
-                  minHeight: 24,
-                  minWidth: 48,
-                  textAlign: 'center',
-                  fontVariantNumeric: 'tabular-nums',
-                  color: 'var(--text-primary)',
-                  font: 'inherit',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                }}
-              >
-                {Math.round((zoom / baseZoom) * 100)}%
-              </button>
               <span
                 role="status"
                 aria-label={
@@ -2906,9 +3216,10 @@ export function EditorScreen({
             style={{
               display: 'inline-flex',
               alignItems: 'center',
-              gap: 2,
-              padding: 2,
-              borderRadius: 10,
+              gap: 4,
+              height: 34,
+              padding: '0 4px',
+              borderRadius: 8,
               border: '1px solid var(--border)',
               background: 'var(--surface-elevated)',
             }}
@@ -2916,17 +3227,21 @@ export function EditorScreen({
             <button
               type="button"
               className="icon-btn"
-              style={{ width: 32, height: 32 }}
+              style={{ width: 26, height: 26, borderRadius: 6 }}
               aria-label={`Brush shape: ${brushShape}. Click to switch`}
               title={`Brush shape: ${brushShape} (click to switch)`}
               onClick={() => setBrushShape((s) => (s === 'round' ? 'square' : 'round'))}
             >
               {brushShape === 'round' ? (
-                <Circle size={14} fill="currentColor" />
+                <Circle size={13} fill="currentColor" />
               ) : (
-                <Square size={14} fill="currentColor" />
+                <Square size={13} fill="currentColor" />
               )}
             </button>
+            <div
+              aria-hidden="true"
+              style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }}
+            />
             {editingBrushSize ? (
               <form
                 onSubmit={(e) => {
@@ -2956,13 +3271,15 @@ export function EditorScreen({
                   }}
                   className="mono"
                   style={{
-                    width: 50,
-                    padding: '3px 6px',
+                    width: 46,
+                    height: 24,
+                    padding: '0 4px',
                     borderRadius: 6,
                     border: '1px solid var(--accent)',
                     background: 'var(--surface)',
                     color: 'var(--text-primary)',
                     fontSize: 12,
+                    textAlign: 'center',
                   }}
                 />
               </form>
@@ -2972,10 +3289,14 @@ export function EditorScreen({
                 className="btn mono"
                 style={{
                   border: 'none',
-                  padding: '4px 8px',
+                  minWidth: 44,
+                  height: 26,
+                  padding: '0 6px',
+                  justifyContent: 'center',
                   fontSize: 12,
-                  background: 'var(--surface)',
-                  borderRadius: 7,
+                  fontWeight: 700,
+                  background: 'transparent',
+                  borderRadius: 6,
                   cursor: 'ew-resize',
                   touchAction: 'none',
                 }}
@@ -3294,7 +3615,11 @@ export function EditorScreen({
             isEyedropperActive={tool === 'eyedropper'}
             onToggleEyedropper={() => onSelectTool('eyedropper')}
             onSelectColor={(c) => setActiveColor(c)}
-            onSetPalette={(cols) => setPalette(cols)}
+            onSetPalette={(cols) => {
+              setPalette(cols);
+              setProject((p) => ({ ...p, sharedPalette: cols }));
+              setRevision((r) => r + 1);
+            }}
           />
         </div>
 
@@ -3361,44 +3686,112 @@ export function EditorScreen({
       </header>
 
       <main aria-label="Canvas workspace" style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <CanvasTabsBar
+          canvases={project.canvases ?? []}
+          activeCanvasIndex={project.activeCanvasIndex ?? 0}
+          openCanvasIds={openCanvasIds}
+          open={tabsOpen}
+          onToggleOpen={() =>
+            setTabsOpen((v) => {
+              const next = !v;
+              try {
+                localStorage.setItem('artopixel_tabs_open_v1', String(next));
+              } catch {
+                // ignore
+              }
+              return next;
+            })
+          }
+          onSelectCanvas={switchCanvas}
+          onHideCanvasTab={hideCanvasTab}
+          onOpenCanvasTab={openCanvasTab}
+          onAddCanvas={addCanvasTab}
+          onRenameCanvas={renameCanvasTab}
+          onReorderCanvas={reorderCanvasTab}
+          onDeleteCanvas={deleteCanvasTab}
+          onCollapsedHudLeftChange={setCollapsedHudLeft}
+        />
         <div
           aria-live="polite"
-          className="mono"
+          className="mono ui-scaled"
           style={{
             position: 'absolute',
-            top: 10,
-            left: 12,
-            zIndex: 15,
+            top: tabsOpen ? 41 : 7,
+            left: tabsOpen ? 12 : collapsedHudLeft,
+            transition:
+              'top 220ms cubic-bezier(0.22, 1, 0.36, 1), left 220ms cubic-bezier(0.22, 1, 0.36, 1)',
+            zIndex: 31,
             pointerEvents: 'none',
             display: 'flex',
             alignItems: 'center',
-            gap: 8,
+            gap: 6,
             fontSize: 11,
-            color: 'var(--text-muted)',
-            background: 'color-mix(in srgb, var(--surface) 75%, transparent)',
-            padding: '3px 8px',
-            borderRadius: 6,
-            border: '1px solid color-mix(in srgb, var(--border) 70%, transparent)',
           }}
         >
-          <span style={{ textTransform: 'capitalize', color: 'var(--text-secondary)' }}>
-            {tool}
-          </span>
-          {(tool === 'pencil' || tool === 'shade') && pixelPerfect && (
-            <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
-              • Pixel Perfect
+          <button
+            type="button"
+            onClick={() => {
+              const canvas = viewportRef.current;
+              if (!canvas) return;
+              const rect = canvas.getBoundingClientRect();
+              setZoom(baseZoom);
+              setPan({
+                x: (rect.width - project.width * baseZoom) / 2,
+                y: (rect.height - project.height * baseZoom) / 2,
+              });
+            }}
+            title="Click to reset zoom to 100%"
+            style={{
+              pointerEvents: 'auto',
+              width: 48,
+              height: 24,
+              flexShrink: 0,
+              background: 'color-mix(in srgb, var(--surface) 75%, transparent)',
+              border: '1px solid color-mix(in srgb, var(--border) 70%, transparent)',
+              borderRadius: 8,
+              padding: 0,
+              textAlign: 'center',
+              fontVariantNumeric: 'tabular-nums',
+              color: 'var(--text-primary)',
+              font: 'inherit',
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            {Math.round((zoom / baseZoom) * 100)}%
+          </button>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              height: 24,
+              color: 'var(--text-muted)',
+              background: 'color-mix(in srgb, var(--surface) 75%, transparent)',
+              padding: '0 8px',
+              borderRadius: 8,
+              border: '1px solid color-mix(in srgb, var(--border) 70%, transparent)',
+            }}
+          >
+            <span style={{ textTransform: 'capitalize', color: 'var(--text-secondary)' }}>
+              {tool}
             </span>
-          )}
-          {mirror !== 'none' && (
-            <span style={{ color: 'var(--text-secondary)' }}>
-              • Mirror: {mirror}
-            </span>
-          )}
-          {tiledMode && (
-            <span style={{ color: 'var(--text-secondary)' }}>
-              • Tiled
-            </span>
-          )}
+            {(tool === 'pencil' || tool === 'shade') && pixelPerfect && (
+              <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
+                • Pixel Perfect
+              </span>
+            )}
+            {mirror !== 'none' && (
+              <span style={{ color: 'var(--text-secondary)' }}>
+                • Mirror: {mirror}
+              </span>
+            )}
+            {tiledMode && (
+              <span style={{ color: 'var(--text-secondary)' }}>
+                • Tiled
+              </span>
+            )}
+          </div>
         </div>
         <canvas
           ref={viewportRef}
@@ -3446,7 +3839,7 @@ export function EditorScreen({
             width: '100%',
             height: '100%',
             display: 'block',
-            cursor: 'crosshair',
+            cursor: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M12 4v16M4 12h16' stroke='%23000000' stroke-width='3' stroke-linecap='round'/%3E%3Cpath d='M12 4v16M4 12h16' stroke='%23ffffff' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E") 12 12, crosshair`,
             touchAction: 'none',
           }}
         />
@@ -3455,7 +3848,7 @@ export function EditorScreen({
           <LayerPill
             layers={project.layers}
             activeLayerIndex={project.activeLayerIndex}
-            topOffset={tool === 'move' || hiddenLayerToast ? 52 : 12}
+            topOffset={(tool === 'move' || hiddenLayerToast ? 47 : 7) + (tabsOpen ? 34 : 0)}
             dimOtherLayers={dimOtherLayers}
             onToggleDimOthers={() => setDimOtherLayers((v) => !v)}
             onToggleVisibility={() => {
@@ -3490,9 +3883,7 @@ export function EditorScreen({
             hasSelection={Boolean(selection)}
             hasClipboard={Boolean(clipboard)}
             canRotate={project.width === project.height}
-            dimOtherLayers={dimOtherLayers}
             onClose={() => setCanvasCtxMenu(null)}
-            onToggleDimOthers={() => setDimOtherLayers((v) => !v)}
             onOutline={() => {
               const layer = project.layers[project.activeLayerIndex];
               if (!layer) return;
@@ -3707,8 +4098,18 @@ export function EditorScreen({
           minimapRef={minimapRef}
           visible={showMinimap}
           leftInset={typeof window !== 'undefined' && window.innerWidth < 640 ? 68 : 12}
-          rightInset={layersOpen ? layersWidth + 12 : 26}
-          bottomInset={timelineOpen ? timelineHeight + 12 : 24}
+          topInset={tabsOpen ? Math.round(34 * uiScale) + 8 : 12}
+          rightInset={
+            layersOpen
+              ? Math.round(
+                  Math.min(
+                    layersWidth,
+                    typeof window !== 'undefined' ? window.innerWidth * 0.74 : layersWidth
+                  ) * uiScale
+                ) + 12
+              : 26
+          }
+          bottomInset={timelineOpen ? Math.round(timelineHeight * uiScale) + 12 : Math.round(24 * uiScale)}
           onToggleVisible={() => setShowMinimap((v) => !v)}
           onResize={drawMinimap}
         />
@@ -4421,8 +4822,17 @@ export function EditorScreen({
             className="floating-card menu-pop-up"
             style={{
               position: 'absolute',
-              bottom: timelineOpen ? timelineHeight + 12 : 24,
-              right: layersOpen ? `calc(min(${layersWidth}px, 74vw) + 12px)` : 26,
+              bottom: timelineOpen
+                ? Math.round(timelineHeight * uiScale) + 12
+                : Math.round(24 * uiScale),
+              right: layersOpen
+                ? Math.round(
+                    Math.min(
+                      layersWidth,
+                      typeof window !== 'undefined' ? window.innerWidth * 0.74 : layersWidth
+                    ) * uiScale
+                  ) + 12
+                : Math.round(26 * uiScale),
               transition: timelineResizing || layersResizing
                 ? 'none'
                 : 'bottom 220ms cubic-bezier(0.22, 1, 0.36, 1), right 200ms cubic-bezier(0.22, 1, 0.36, 1)',

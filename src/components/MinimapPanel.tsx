@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  Contrast,
   Eye,
   EyeOff,
   GripHorizontal,
@@ -15,6 +16,7 @@ function loadSavedState(): {
   size: number;
   locked: boolean;
   visible: boolean;
+  dimmed: boolean;
 } {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -30,6 +32,7 @@ function loadSavedState(): {
               : 84,
           locked: Boolean(parsed.locked),
           visible: parsed.visible !== false,
+          dimmed: Boolean(parsed.dimmed),
         };
       }
     }
@@ -42,6 +45,7 @@ function loadSavedState(): {
     size: 84,
     locked: true,
     visible: true,
+    dimmed: false,
   };
 }
 
@@ -50,6 +54,7 @@ export function MinimapPanel({
   visible,
   leftInset = 12,
   rightInset = 12,
+  topInset = 12,
   bottomInset = 12,
   onToggleVisible,
   onResize,
@@ -58,16 +63,20 @@ export function MinimapPanel({
   visible: boolean;
   leftInset?: number;
   rightInset?: number;
+  topInset?: number;
   bottomInset?: number;
   onToggleVisible: () => void;
   onResize?: () => void;
 }) {
   const initial = useRef(loadSavedState());
   const [locked, setLocked] = useState(initial.current.locked);
+  const [dimmed, setDimmed] = useState(initial.current.dimmed);
   const [pos, setPos] = useState({ x: initial.current.x, y: initial.current.y });
   const [size, setSize] = useState(initial.current.size);
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
+  const [parentSize, setParentSize] = useState<{ w: number; h: number } | null>(null);
+  const [panelSize, setPanelSize] = useState<{ w: number; h: number } | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const dragOffsetRef = useRef<{ dx: number; dy: number } | null>(null);
   const resizeStartRef = useRef<{ startX: number; startY: number; startSize: number } | null>(
@@ -75,15 +84,36 @@ export function MinimapPanel({
   );
 
   useEffect(() => {
+    const el = panelRef.current;
+    const parent = el?.parentElement;
+    if (!parent) return;
+    const sync = () => {
+      setParentSize({ w: parent.clientWidth, h: parent.clientHeight });
+      if (el) {
+        setPanelSize({ w: el.offsetWidth, h: el.offsetHeight });
+      }
+    };
+    sync();
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(sync);
+      ro.observe(parent);
+      if (el) ro.observe(el);
+      return () => ro.disconnect();
+    }
+    window.addEventListener('resize', sync);
+    return () => window.removeEventListener('resize', sync);
+  }, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ x: pos.x, y: pos.y, size, locked, visible })
+        JSON.stringify({ x: pos.x, y: pos.y, size, locked, visible, dimmed })
       );
     } catch {
       // ignore
     }
-  }, [pos, size, locked, visible]);
+  }, [pos, size, locked, visible, dimmed]);
 
   useEffect(() => {
     if (!visible) return;
@@ -107,7 +137,7 @@ export function MinimapPanel({
     const maxH = parent ? parent.height - (panelRect?.height ?? 96) - bottomInset : window.innerHeight - 96;
     setPos({
       x: Math.max(leftInset, Math.min(maxW, e.clientX - dragOffsetRef.current.dx)),
-      y: Math.max(12, Math.min(maxH, e.clientY - dragOffsetRef.current.dy)),
+      y: Math.max(topInset, Math.min(maxH, e.clientY - dragOffsetRef.current.dy)),
     });
   };
 
@@ -119,19 +149,21 @@ export function MinimapPanel({
     dragOffsetRef.current = null;
   };
 
-  const panelW = Math.max(146, size + 14);
-  const panelH = visible ? size + 44 : 42;
+  const panelW = panelSize?.w ?? Math.max(146, size + 14);
+  const panelH = panelSize?.h ?? (visible ? size + 50 : 42);
   const parentW =
+    parentSize?.w ??
     panelRef.current?.parentElement?.clientWidth ??
     (typeof window !== 'undefined' ? window.innerWidth : 800);
   const parentH =
+    parentSize?.h ??
     panelRef.current?.parentElement?.clientHeight ??
     (typeof window !== 'undefined' ? window.innerHeight - 54 : 600);
   const maxLeft = Math.max(leftInset, parentW - panelW - rightInset);
-  const maxTop = Math.max(12, parentH - panelH - bottomInset);
+  const maxTop = Math.max(topInset, parentH - panelH - bottomInset);
 
   const effectiveLeft = isDragging ? pos.x : Math.min(Math.max(pos.x, leftInset), maxLeft);
-  const effectiveTop = isDragging ? pos.y : Math.min(Math.max(pos.y, 12), maxTop);
+  const effectiveTop = isDragging ? pos.y : Math.min(Math.max(pos.y, topInset), maxTop);
 
   return (
     <div
@@ -148,6 +180,8 @@ export function MinimapPanel({
         display: 'flex',
         flexDirection: 'column',
         gap: 4,
+        opacity: dimmed ? 0.5 : 1,
+        transition: 'opacity 180ms ease',
       }}
     >
       <div
@@ -177,6 +211,17 @@ export function MinimapPanel({
         >
           Preview
         </span>
+        <button
+          type="button"
+          className={`icon-btn ${dimmed ? 'active' : ''}`}
+          style={{ width: 28, height: 28 }}
+          aria-label={dimmed ? 'Restore minimap opacity to 100%' : 'Set minimap opacity to 50%'}
+          aria-pressed={dimmed}
+          title={dimmed ? 'Opacity: 50% (click for 100%)' : 'Opacity: 100% (click for 50%)'}
+          onClick={() => setDimmed((v) => !v)}
+        >
+          <Contrast size={13} />
+        </button>
         <button
           type="button"
           className="icon-btn"

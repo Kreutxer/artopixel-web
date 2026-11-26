@@ -10,13 +10,11 @@ export function CanvasContextMenu({
   hasSelection,
   hasClipboard,
   canRotate,
-  dimOtherLayers,
   onClose,
   onEyedropper,
   onShade,
   onOpenReplaceColor,
   onOutline,
-  onToggleDimOthers,
   onFlipLayerH,
   onFlipLayerV,
   onRotateLayer90,
@@ -36,13 +34,11 @@ export function CanvasContextMenu({
   hasSelection: boolean;
   hasClipboard: boolean;
   canRotate: boolean;
-  dimOtherLayers: boolean;
   onClose: () => void;
   onEyedropper: () => void;
   onShade: (lighten: boolean) => void;
   onOpenReplaceColor: () => void;
   onOutline: () => void;
-  onToggleDimOthers: () => void;
   onFlipLayerH: () => void;
   onFlipLayerV: () => void;
   onRotateLayer90: () => void;
@@ -211,20 +207,6 @@ export function CanvasContextMenu({
         }}
       >
         1px Outline
-      </button>
-
-      <button
-        type="button"
-        role="menuitemcheckbox"
-        aria-checked={dimOtherLayers}
-        className={`btn ${dimOtherLayers ? 'primary' : ''}`}
-        style={{ width: '100%', border: 'none', justifyContent: 'flex-start', fontSize: 12.5 }}
-        onClick={() => {
-          onToggleDimOthers();
-          onClose();
-        }}
-      >
-        {dimOtherLayers ? 'Dim Other Layers: On' : 'Dim Other Layers'}
       </button>
 
       <div

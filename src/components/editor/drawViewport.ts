@@ -373,63 +373,44 @@ export function renderEditorViewport(p: DrawViewportParams): void {
 
   if (p.hoverPt && !p.isPanning && !p.isScrubbing && !p.isDraggingMirror) {
     const [hx, hy] = p.hoverPt;
+    ctx.save();
     if (p.tiledMode || (hx >= 0 && hy >= 0 && hx < w && hy < h)) {
       const isBrushSized =
         p.tool === 'pencil' || p.tool === 'eraser' || p.tool === 'shade' || p.tool === 'line';
       const size = isBrushSized ? p.brushSize : 1;
       const startOff = size <= 1 ? 0 : -Math.floor((size - 1) / 2);
-      ctx.save();
-      if (isBrushSized && size <= 24) {
-        const offsets = brushOffsets(size, p.brushShape);
-        ctx.fillStyle =
-          p.tool === 'eraser' ? 'rgba(255,255,255,0.22)' : argbToCss(p.activeColor);
-        ctx.globalAlpha = p.tool === 'eraser' ? 1 : 0.45;
-        for (const [dx, dy] of offsets) {
-          const gx = hx + dx;
-          const gy = hy + dy;
-          if (!p.tiledMode && (gx < 0 || gy < 0 || gx >= w || gy >= h)) continue;
-          ctx.fillRect(gx * zoom, gy * zoom, zoom, zoom);
-        }
-        ctx.globalAlpha = 1;
-      }
-      const rx = (hx + startOff) * zoom;
-      const ry = (hy + startOff) * zoom;
-      const rSize = size * zoom;
-      if (isBrushSized && size > 1 && p.brushShape === 'round') {
-        if (size > 24) {
+      if (isBrushSized) {
+        if (size <= 24) {
+          const offsets = brushOffsets(size, p.brushShape);
+          ctx.fillStyle =
+            p.tool === 'eraser' ? 'rgba(255,255,255,0.22)' : argbToCss(p.activeColor);
+          ctx.globalAlpha = p.tool === 'eraser' ? 1 : 0.45;
+          for (const [dx, dy] of offsets) {
+            const gx = hx + dx;
+            const gy = hy + dy;
+            if (!p.tiledMode && (gx < 0 || gy < 0 || gx >= w || gy >= h)) continue;
+            ctx.fillRect(gx * zoom, gy * zoom, zoom, zoom);
+          }
+          ctx.globalAlpha = 1;
+        } else {
+          const rx = (hx + startOff) * zoom;
+          const ry = (hy + startOff) * zoom;
+          const rSize = size * zoom;
           ctx.fillStyle =
             p.tool === 'eraser' ? 'rgba(255,255,255,0.22)' : argbToCss(p.activeColor);
           ctx.globalAlpha = 0.35;
-          ctx.beginPath();
-          ctx.arc(rx + rSize / 2, ry + rSize / 2, rSize / 2, 0, Math.PI * 2);
-          ctx.fill();
+          if (p.brushShape === 'round') {
+            ctx.beginPath();
+            ctx.arc(rx + rSize / 2, ry + rSize / 2, rSize / 2, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.fillRect(rx, ry, rSize, rSize);
+          }
           ctx.globalAlpha = 1;
         }
-        ctx.beginPath();
-        ctx.arc(rx + rSize / 2, ry + rSize / 2, rSize / 2, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      } else {
-        if (size > 24 && isBrushSized) {
-          ctx.fillStyle =
-            p.tool === 'eraser' ? 'rgba(255,255,255,0.22)' : argbToCss(p.activeColor);
-          ctx.globalAlpha = 0.35;
-          ctx.fillRect(rx, ry, rSize, rSize);
-          ctx.globalAlpha = 1;
-        }
-        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(rx, ry, rSize, rSize);
-        ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(rx, ry, rSize, rSize);
       }
-      ctx.restore();
     }
+    ctx.restore();
   }
 
   if (p.ctrlHeld && p.hoverPt && !p.isPanning && !p.isDrawing) {

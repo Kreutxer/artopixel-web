@@ -244,9 +244,10 @@ export function ColorPanel({
         position: 'relative',
         display: 'inline-flex',
         alignItems: 'center',
-        gap: 6,
-        padding: '3px 6px',
-        borderRadius: 10,
+        gap: 4,
+        height: 34,
+        padding: '0 6px',
+        borderRadius: 8,
         border: '1px solid var(--border)',
         background: 'var(--surface-elevated)',
         minWidth: 0,
@@ -263,19 +264,19 @@ export function ColorPanel({
           display: 'inline-flex',
           alignItems: 'center',
           gap: 4,
-          height: 30,
-          padding: '2px 5px 2px 3px',
-          borderRadius: 7,
-          border: expanded ? '1px solid var(--accent)' : '1px solid var(--border)',
-          background: 'var(--surface)',
+          height: 26,
+          padding: '0 4px',
+          borderRadius: 6,
+          border: 'none',
+          background: expanded ? 'var(--accent-container)' : 'transparent',
           cursor: 'pointer',
           flexShrink: 0,
         }}
       >
         <span
           style={{
-            width: 22,
-            height: 22,
+            width: 20,
+            height: 20,
             borderRadius: 5,
             background: argbToCss(activeColor),
             border: '1px solid var(--border)',
@@ -289,7 +290,7 @@ export function ColorPanel({
         <button
           type="button"
           className={`icon-btn ${isEyedropperActive ? 'active' : ''}`}
-          style={{ width: 30, height: 30, flexShrink: 0 }}
+          style={{ width: 26, height: 26, borderRadius: 6, flexShrink: 0 }}
           aria-label="Eyedropper tool (I)"
           aria-pressed={isEyedropperActive}
           title="Eyedropper (I)"
@@ -299,32 +300,40 @@ export function ColorPanel({
         </button>
       )}
 
-      {/* Inline palette swatches with hidden scrollbar + fixed arrow indicators */}
-      <button
-        type="button"
-        disabled={!canScrollLeft}
-        onClick={() => smoothScrollBy(-96)}
-        aria-label="Scroll palette left"
-        title="Scroll palette left"
-        style={{
-          width: 24,
-          height: 26,
-          borderRadius: 5,
-          border: 'none',
-          background: 'transparent',
-          color: 'var(--text-secondary)',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: canScrollLeft ? 'pointer' : 'default',
-          opacity: canScrollLeft ? 1 : 0.25,
-          pointerEvents: canScrollLeft ? 'auto' : 'none',
-          padding: 0,
-          flexShrink: 0,
-        }}
-      >
-        <ChevronLeft size={14} />
-      </button>
+      <div
+        aria-hidden="true"
+        style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }}
+      />
+
+      {/* Inline palette swatches with hidden scrollbar + contextual arrow indicators */}
+      {(canScrollLeft || canScrollRight) && (
+        <button
+          type="button"
+          disabled={!canScrollLeft}
+          onClick={() => smoothScrollBy(-96)}
+          aria-label="Scroll palette left"
+          title="Scroll palette left"
+          style={{
+            width: 20,
+            height: 24,
+            borderRadius: 5,
+            border: 'none',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: canScrollLeft ? 'pointer' : 'default',
+            opacity: canScrollLeft ? 1 : 0.25,
+            pointerEvents: canScrollLeft ? 'auto' : 'none',
+            transition: 'opacity 140ms ease',
+            padding: 0,
+            flexShrink: 0,
+          }}
+        >
+          <ChevronLeft size={14} />
+        </button>
+      )}
 
       <div
         ref={paletteStripRef}
@@ -346,7 +355,7 @@ export function ColorPanel({
           overflowX: 'auto',
           overflowY: 'hidden',
           maxWidth: 'min(26vw, 320px)',
-          padding: '2px 0',
+          padding: '2px 3px',
         }}
       >
         {palette.map((c, idx) => {
@@ -368,8 +377,8 @@ export function ColorPanel({
               aria-label={`Color #${argbToHex6(c)}`}
               aria-pressed={isActive}
               style={{
-                width: 24,
-                height: 24,
+                width: 22,
+                height: 22,
                 borderRadius: 5,
                 background: argbToCss(c),
                 border: isActive ? '2px solid var(--accent)' : '1px solid var(--border)',
@@ -405,31 +414,34 @@ export function ColorPanel({
         </button>
       </div>
 
-      <button
-        type="button"
-        disabled={!canScrollRight}
-        onClick={() => smoothScrollBy(96)}
-        aria-label="Scroll palette right"
-        title="More colors (scroll right)"
-        style={{
-          width: 24,
-          height: 26,
-          borderRadius: 5,
-          border: 'none',
-          background: 'transparent',
-          color: 'var(--text-secondary)',
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          cursor: canScrollRight ? 'pointer' : 'default',
-          opacity: canScrollRight ? 1 : 0.25,
-          pointerEvents: canScrollRight ? 'auto' : 'none',
-          padding: 0,
-          flexShrink: 0,
-        }}
-      >
-        <ChevronRight size={14} />
-      </button>
+      {(canScrollLeft || canScrollRight) && (
+        <button
+          type="button"
+          disabled={!canScrollRight}
+          onClick={() => smoothScrollBy(96)}
+          aria-label="Scroll palette right"
+          title="More colors (scroll right)"
+          style={{
+            width: 20,
+            height: 24,
+            borderRadius: 5,
+            border: 'none',
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            cursor: canScrollRight ? 'pointer' : 'default',
+            opacity: canScrollRight ? 1 : 0.25,
+            pointerEvents: canScrollRight ? 'auto' : 'none',
+            transition: 'opacity 140ms ease',
+            padding: 0,
+            flexShrink: 0,
+          }}
+        >
+          <ChevronRight size={14} />
+        </button>
+      )}
 
       <input
         ref={fileRef}

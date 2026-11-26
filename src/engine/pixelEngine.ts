@@ -1,4 +1,4 @@
-import { BrushShape, GridRect, MirrorMode, PixelFrame, PixelProject } from './types';
+import { BrushShape, CanvasDoc, GridRect, MirrorMode, PixelFrame, PixelProject } from './types';
 
 export interface DrawAction {
   frameId?: string;
@@ -42,28 +42,113 @@ export function ensureProjectFrames(project: PixelProject): PixelProject {
   };
 }
 
+export function createCanvasDoc(
+  name = 'Canvas 1',
+  width = 32,
+  height = 32
+): CanvasDoc {
+  const layer = {
+    id: `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    name: 'Layer 1',
+    visible: true,
+    opacity: 1.0,
+    groupId: null,
+    pixels: new Uint32Array(width * height),
+  };
+  return {
+    id: `canvas_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    name,
+    width,
+    height,
+    layers: [layer],
+    groups: [],
+    activeLayerIndex: 0,
+    frames: [
+      {
+        id: `frame_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        layers: [layer],
+        groups: [],
+        activeLayerIndex: 0,
+      },
+    ],
+    activeFrameIndex: 0,
+    fps: 8,
+  };
+}
+
+export function ensureProjectCanvases(project: PixelProject): PixelProject {
+  if (project.canvases && project.canvases.length > 0) {
+    const cIdx = Math.max(
+      0,
+      Math.min(project.canvases.length - 1, project.activeCanvasIndex ?? 0)
+    );
+    const activeCanvas = project.canvases[cIdx];
+    const normalizedActive = ensureProjectFrames({
+      ...project,
+      width: activeCanvas.width,
+      height: activeCanvas.height,
+      layers: activeCanvas.layers,
+      groups: activeCanvas.groups,
+      activeLayerIndex: activeCanvas.activeLayerIndex,
+      frames: activeCanvas.frames,
+      activeFrameIndex: activeCanvas.activeFrameIndex,
+      fps: activeCanvas.fps,
+    });
+    const nextCanvases = [...project.canvases];
+    nextCanvases[cIdx] = {
+      ...activeCanvas,
+      layers: normalizedActive.layers,
+      groups: normalizedActive.groups,
+      activeLayerIndex: normalizedActive.activeLayerIndex,
+      frames: normalizedActive.frames,
+      activeFrameIndex: normalizedActive.activeFrameIndex,
+      fps: normalizedActive.fps,
+    };
+    return {
+      ...normalizedActive,
+      canvases: nextCanvases,
+      activeCanvasIndex: cIdx,
+    };
+  }
+  const withFrames = ensureProjectFrames(project);
+  const firstCanvas: CanvasDoc = {
+    id: `canvas_${project.id}`,
+    name: project.name || 'Canvas 1',
+    width: withFrames.width,
+    height: withFrames.height,
+    layers: withFrames.layers,
+    groups: withFrames.groups,
+    activeLayerIndex: withFrames.activeLayerIndex,
+    frames: withFrames.frames,
+    activeFrameIndex: withFrames.activeFrameIndex,
+    fps: withFrames.fps,
+  };
+  return {
+    ...withFrames,
+    canvases: [firstCanvas],
+    activeCanvasIndex: 0,
+  };
+}
+
 export function createNewProject(
   name = 'Untitled Sprite',
   width = 32,
   height = 32
 ): PixelProject {
+  const firstCanvas = createCanvasDoc(name, width, height);
   return {
     id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     name,
     width,
     height,
-    layers: [
-      {
-        id: 'layer_1',
-        name: 'Layer 1',
-        visible: true,
-        opacity: 1.0,
-        groupId: null,
-        pixels: new Uint32Array(width * height),
-      },
-    ],
-    groups: [],
+    layers: firstCanvas.layers,
+    groups: firstCanvas.groups,
     activeLayerIndex: 0,
+    frames: firstCanvas.frames,
+    activeFrameIndex: 0,
+    fps: 8,
+    canvases: [firstCanvas],
+    activeCanvasIndex: 0,
     referenceDataUrl: null,
     referenceVisible: true,
     updatedAt: Date.now(),

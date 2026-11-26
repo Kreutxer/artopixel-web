@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { PixelLayer, PixelProject } from '../engine/types';
 import { DeleteGroupModal } from './layers/DeleteGroupModal';
+import { DeleteLayersModal } from './layers/DeleteLayersModal';
 import { useEscapeKey } from '../hooks/useEscapeKey';
 
 function LayerThumb({
@@ -165,6 +166,7 @@ export function LayersPanel({
     name: string;
     layerIndices: number[];
   } | null>(null);
+  const [deleteLayersConfirm, setDeleteLayersConfirm] = useState<number[] | null>(null);
   const [inlineRename, setInlineRename] = useState<{ index: number; value: string } | null>(null);
 
   const ctxMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1256,8 +1258,7 @@ export function LayersPanel({
             onClick={() => {
               const t = ctxMenu.targets;
               setCtxMenu(null);
-              onDeleteLayers(t);
-              setSelectedIds([]);
+              setDeleteLayersConfirm(t);
             }}
           >
             {ctxMenu.targets.length > 1
@@ -1284,6 +1285,20 @@ export function LayersPanel({
             }
             setSelectedIds([]);
             setDeleteGroupConfirm(null);
+          }}
+        />
+      )}
+
+      {deleteLayersConfirm && (
+        <DeleteLayersModal
+          layerNames={deleteLayersConfirm.map(
+            (idx) => project.layers[idx]?.name ?? `Layer ${idx + 1}`
+          )}
+          onCancel={() => setDeleteLayersConfirm(null)}
+          onConfirm={() => {
+            onDeleteLayers(deleteLayersConfirm);
+            setSelectedIds([]);
+            setDeleteLayersConfirm(null);
           }}
         />
       )}

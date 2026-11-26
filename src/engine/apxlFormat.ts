@@ -1,4 +1,4 @@
-import { PixelFrame, PixelLayer, PixelProject } from './types';
+import { CanvasDoc, PixelFrame, PixelLayer, PixelProject } from './types';
 
 interface ApxlLayer {
   id: string;
@@ -17,6 +17,19 @@ interface ApxlFrame {
   activeLayerIndex: number;
 }
 
+interface ApxlCanvas {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+  activeLayerIndex: number;
+  activeFrameIndex?: number;
+  fps?: number;
+  groups: PixelProject['groups'];
+  layers: ApxlLayer[];
+  frames?: ApxlFrame[];
+}
+
 interface ApxlDocument {
   format: 'artopixel-apxl';
   version: 1;
@@ -26,6 +39,9 @@ interface ApxlDocument {
   activeLayerIndex: number;
   activeFrameIndex?: number;
   fps?: number;
+  canvases?: ApxlCanvas[];
+  activeCanvasIndex?: number;
+  sharedPalette?: number[];
   referenceDataUrl: string | null;
   referenceVisible: boolean;
   updatedAt: number;
@@ -82,18 +98,21 @@ function decodeLayer(l: ApxlLayer, pixelCount: number): PixelLayer {
   };
 }
 
-export async function buildApxlBlob(project: PixelProject): Promise<Blob> {
-  const activeIdx = Math.max(
-    0,
-    Math.min(project.activeFrameIndex ?? 0, (project.frames?.length ?? 1) - 1)
-  );
-  const frames: ApxlFrame[] | undefined = project.frames?.map((f, idx) =>
+function encodeCanvasFrames(c: {
+  layers: PixelLayer[];
+  groups: PixelProject['groups'];
+  activeLayerIndex: number;
+  frames?: PixelFrame[];
+  activeFrameIndex?: number;
+}) {
+  const activeIdx = Math.max(0, Math.min(c.activeFrameIndex ?? 0, (c.frames?.length ?? 1) - 1));
+  const frames: ApxlFrame[] | undefined = c.frames?.map((f, idx) =>
     idx === activeIdx
       ? {
           id: f.id,
-          layers: project.layers.map(encodeLayer),
-          groups: project.groups,
-          activeLayerIndex: project.activeLayerIndex,
+          layers: c.layers.map(encodeLayer),
+          groups: c.groups,
+          activeLayerIndex: c.activeLayerIndex,
         }
       : {
           id: f.id,
@@ -102,6 +121,48 @@ export async function buildApxlBlob(project: PixelProject): Promise<Blob> {
           activeLayerIndex: f.activeLayerIndex,
         }
   );
+  return {
+    frames,
+    activeIdx: c.frames ? activeIdx : undefined,
+    layers: c.layers.map(encodeLayer),
+  };
+}
+
+export async function buildApxlBlob(project: PixelProject): Promise<Blob> {
+  const topEncoded = encodeCanvasFrames(project);
+  const activeCanvasIdx =
+    project.canvases && project.canvases.length > 0
+      ? Math.max(0, Math.min(project.activeCanvasIndex ?? 0, project.canvases.length - 1))
+      : undefined;
+  const canvases: ApxlCanvas[] | undefined = project.canvases?.map((c, idx) => {
+    if (idx === activeCanvasIdx) {
+      return {
+        id: c.id,
+        name: c.name,
+        width: project.width,
+        height: project.height,
+        activeLayerIndex: project.activeLayerIndex,
+        activeFrameIndex: topEncoded.activeIdx,
+        fps: project.fps,
+        groups: project.groups,
+        layers: topEncoded.layers,
+        frames: topEncoded.frames,
+      };
+    }
+    const enc = encodeCanvasFrames(c);
+    return {
+      id: c.id,
+      name: c.name,
+      width: c.width,
+      height: c.height,
+      activeLayerIndex: c.activeLayerIndex,
+      activeFrameIndex: enc.activeIdx,
+      fps: c.fps,
+      groups: c.groups,
+      layers: enc.layers,
+      frames: enc.frames,
+    };
+  });
 
   const doc: ApxlDocument = {
     format: 'artopixel-apxl',
@@ -110,14 +171,17 @@ export async function buildApxlBlob(project: PixelProject): Promise<Blob> {
     width: project.width,
     height: project.height,
     activeLayerIndex: project.activeLayerIndex,
-    activeFrameIndex: project.frames ? activeIdx : undefined,
+    activeFrameIndex: topEncoded.activeIdx,
     fps: project.fps,
+    canvases,
+    activeCanvasIndex: activeCanvasIdx,
+    sharedPalette: project.sharedPalette,
     referenceDataUrl: project.referenceDataUrl,
     referenceVisible: project.referenceVisible,
     updatedAt: project.updatedAt,
     groups: project.groups,
-    layers: project.layers.map(encodeLayer),
-    frames,
+    layers: topEncoded.layers,
+    frames: topEncoded.frames,
   };
 
   const jsonBytes = new TextEncoder().encode(JSON.stringify(doc));
@@ -170,6 +234,63 @@ export async function parseApxlBuffer(
     throw new Error('Invalid canvas dimensions in .apxl file.');
   }
 
+  const decodeCanvas = (c: ApxlCanvas): CanvasDoc => {
+    const pc = c.width * c.height;
+    const cFrames: PixelFrame[] | undefined = c.frames?.map((f) => ({
+      id: f.id,
+      layers: f.layers.map((l) => decodeLayer(l, pc)),
+      groups: f.groups ?? [],
+      activeLayerIndex: f.activeLayerIndex ?? 0,
+    }));
+    const cActiveFrameIdx =
+      cFrames && cFrames.length > 0
+        ? Math.max(0, Math.min(c.activeFrameIndex ?? 0, cFrames.length - 1))
+        : undefined;
+    const cActiveFrame =
+      cFrames && cActiveFrameIdx !== undefined ? cFrames[cActiveFrameIdx] : undefined;
+    return {
+      id: c.id,
+      name: c.name,
+      width: c.width,
+      height: c.height,
+      activeLayerIndex: cActiveFrame?.activeLayerIndex ?? c.activeLayerIndex ?? 0,
+      frames: cFrames,
+      activeFrameIndex: cActiveFrameIdx,
+      fps: c.fps,
+      groups: cActiveFrame?.groups ?? c.groups ?? [],
+      layers: cActiveFrame?.layers ?? c.layers.map((l) => decodeLayer(l, pc)),
+    };
+  };
+
+  const canvases: CanvasDoc[] | undefined = parsed.canvases?.map(decodeCanvas);
+  const activeCanvasIndex =
+    canvases && canvases.length > 0
+      ? Math.max(0, Math.min(parsed.activeCanvasIndex ?? 0, canvases.length - 1))
+      : undefined;
+  const activeCanvas =
+    canvases && activeCanvasIndex !== undefined ? canvases[activeCanvasIndex] : undefined;
+
+  if (activeCanvas) {
+    return {
+      id: `proj_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      name: parsed.name?.trim() || fallbackName,
+      width: activeCanvas.width,
+      height: activeCanvas.height,
+      activeLayerIndex: activeCanvas.activeLayerIndex,
+      frames: activeCanvas.frames,
+      activeFrameIndex: activeCanvas.activeFrameIndex,
+      fps: activeCanvas.fps,
+      canvases,
+      activeCanvasIndex,
+      sharedPalette: parsed.sharedPalette,
+      referenceDataUrl: parsed.referenceDataUrl ?? null,
+      referenceVisible: parsed.referenceVisible ?? true,
+      updatedAt: Date.now(),
+      groups: activeCanvas.groups,
+      layers: activeCanvas.layers,
+    };
+  }
+
   const pixelCount = parsed.width * parsed.height;
   const frames: PixelFrame[] | undefined = parsed.frames?.map((f) => ({
     id: f.id,
@@ -194,6 +315,7 @@ export async function parseApxlBuffer(
     frames,
     activeFrameIndex,
     fps: parsed.fps,
+    sharedPalette: parsed.sharedPalette,
     referenceDataUrl: parsed.referenceDataUrl ?? null,
     referenceVisible: parsed.referenceVisible ?? true,
     updatedAt: Date.now(),
