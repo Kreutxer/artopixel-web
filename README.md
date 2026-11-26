@@ -1,6 +1,16 @@
 # ArtoPixel Web
 
-A browser-based pixel-art and frame-by-frame animation studio built with **React 19**, **TypeScript**, **Vite**, and **HTML5 2D Canvas** (`imageSmoothingEnabled = false`). Works completely offline in the browser with IndexedDB persistence.
+A fast, offline-first **browser pixel art editor** and **frame-by-frame sprite animation studio** built with **React 19**, **TypeScript**, **Vite**, and **HTML5 2D Canvas** (`imageSmoothingEnabled = false`). Designed for indie game developers, pixel artists, and tileset creators—no account or installation required, with automatic **IndexedDB** local persistence.
+
+---
+
+## Why ArtoPixel Web?
+
+- **Multi-Canvas & Nested Folder Workspace**: Unlike single-canvas web pixel editors, ArtoPixel lets you manage entire sprite packs, character sheets, and UI sets inside one project—complete with nested folders, **Active Folder** targeting, independent canvas sizes, per-canvas undo/redo history, and drag-and-drop organization.
+- **Game-Dev Ready Folder `.zip` Export**: Package any folder or full project into a `.zip` archive directly in the browser, exporting scaled `.png` sprites, lossless `.apxl` source files, or **both** in mirrored `png/` and `source/` directories.
+- **Figma-Style Layer Finder (`Ctrl + Hover` / `Ctrl + Click`)**: Instantly highlight the pixel silhouette of the topmost visible layer under your cursor and click to select it—paired with non-destructive **Dim Other Layers** and **Alpha Lock**.
+- **Precision Pixel Art & Seamless Tileset Tools**: Includes **Pixel-Perfect Mode (`P`)** with L-corner removal, draggable **Bezier Curves (`U`)**, **Tiled `3×3` Seamless Mode** for game textures, draggable **Mirror Symmetry** axes, **1px Auto-Outline**, and **2-Color Onion Skinning**.
+- **100% Offline Studio with `.aseprite` & `.apxl` Support**: Import and export multi-frame **Aseprite (`.aseprite`)** files, generate **Animated GIFs** and **PNG Spritesheets**, extract palettes with **Median Cut**, and save lossless gzipped **ArtoPixel (`.apxl`)** files.
 
 ---
 
