@@ -1,23 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AlertCircle,
   Check,
-  ChevronDown,
   Circle,
   Copy,
-  Download,
   Eraser,
-  Eye,
-  EyeOff,
   FlipHorizontal,
   FlipVertical,
-  Grid2x2,
-  Grid3x3,
-  Home,
-  ImagePlus,
-  Loader2,
-  Menu,
-  Moon,
   Move,
   PaintBucket,
   Pencil,
@@ -28,7 +16,6 @@ import {
   Spline,
   Square,
   SquareDashed,
-  Sun,
   Undo2,
   X,
 } from 'lucide-react';
@@ -70,14 +57,19 @@ import {
   ShortcutAction,
   loadShortcuts,
 } from '../hooks/useShortcuts';
+import { useCanvasTabs } from '../hooks/useCanvasTabs';
 import { useEscapeKey } from '../hooks/useEscapeKey';
-import { ColorPanel } from './ColorPanel';
+import { useTimelineFrames } from '../hooks/useTimelineFrames';
 import { LayersPanel } from './LayersPanel';
 import { MinimapPanel } from './MinimapPanel';
 import { TimelinePanel } from './TimelinePanel';
 import { CanvasContextMenu } from './editor/CanvasContextMenu';
 import { CanvasTabsBar } from './editor/CanvasTabsBar';
+import { DebugHud } from './editor/DebugHud';
+import { EditorHeader } from './editor/EditorHeader';
+import { EditorToasts } from './editor/EditorToasts';
 import { ExportModal } from './editor/ExportModal';
+import { SelectionActionBar } from './editor/SelectionActionBar';
 import { LayerPill } from './editor/LayerPill';
 import { ReplaceColorModal } from './editor/ReplaceColorModal';
 import { ResizeCanvasModal } from './editor/ResizeCanvasModal';
@@ -147,20 +139,6 @@ export function EditorScreen({
   const [dimOtherLayers, setDimOtherLayers] = useState(false);
   const [tool, setTool] = useState<PixelTool>('pencil');
   const [mirror, setMirror] = useState<MirrorMode>('none');
-  const [lastMirrorMode, setLastMirrorMode] = useState<Exclude<MirrorMode, 'none'>>('horizontal');
-  const [mirrorMenuOpen, setMirrorMenuOpen] = useState(false);
-  const mirrorMenuRef = useRef<HTMLDivElement | null>(null);
-  useEscapeKey(() => setMirrorMenuOpen(false), mirrorMenuOpen);
-  useEffect(() => {
-    if (!mirrorMenuOpen) return;
-    const onDown = (e: PointerEvent) => {
-      if (mirrorMenuRef.current && !mirrorMenuRef.current.contains(e.target as Node)) {
-        setMirrorMenuOpen(false);
-      }
-    };
-    window.addEventListener('pointerdown', onDown);
-    return () => window.removeEventListener('pointerdown', onDown);
-  }, [mirrorMenuOpen]);
   const [mirrorPos, setMirrorPos] = useState({
     x: initialProject.width / 2,
     y: initialProject.height / 2,
@@ -181,20 +159,6 @@ export function EditorScreen({
   );
   const [showMinimap, setShowMinimap] = useState(true);
   const [gridMode, setGridMode] = useState<GridMode>('tile');
-  const [lastGridMode, setLastGridMode] = useState<Exclude<GridMode, 'off'>>('tile');
-  const [gridMenuOpen, setGridMenuOpen] = useState(false);
-  const gridMenuRef = useRef<HTMLDivElement | null>(null);
-  useEscapeKey(() => setGridMenuOpen(false), gridMenuOpen);
-  useEffect(() => {
-    if (!gridMenuOpen) return;
-    const onDown = (e: PointerEvent) => {
-      if (gridMenuRef.current && !gridMenuRef.current.contains(e.target as Node)) {
-        setGridMenuOpen(false);
-      }
-    };
-    window.addEventListener('pointerdown', onDown);
-    return () => window.removeEventListener('pointerdown', onDown);
-  }, [gridMenuOpen]);
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [layersOpen, setLayersOpen] = useState<boolean>(() => {
     try {
@@ -224,28 +188,22 @@ export function EditorScreen({
   const toolRef = useRef(tool);
   toolRef.current = tool;
   const eyedropperPrevToolRef = useRef<PixelTool | null>(null);
-  const [editingBrushSize, setEditingBrushSize] = useState(false);
-  const [brushSizeDraft, setBrushSizeDraft] = useState('1');
   const [deletedLayerToast, setDeletedLayerToast] = useState<{
     layers: PixelLayer[];
     activeLayerIndex: number;
   } | null>(null);
-  const [showMoreMenu, setShowMoreMenu] = useState(false);
-  const [optionsSubOpen, setOptionsSubOpen] = useState(false);
   const [showResizeModal, setShowResizeModal] = useState(false);
   const [showReplaceModal, setShowReplaceModal] = useState(false);
   const [replaceFromColor, setReplaceFromColor] = useState<number>(0xff000000);
   const [replaceToColor, setReplaceToColor] = useState<number>(0xff000000);
-  const [editingName, setEditingName] = useState(false);
-  const [nameDraft, setNameDraft] = useState(initialProject.name);
   const [canvasCtxMenu, setCanvasCtxMenu] = useState<{
     x: number;
     y: number;
     gx: number;
     gy: number;
   } | null>(null);
-  const importInputRef = useRef<HTMLInputElement | null>(null);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [exportScopeInit, setExportScopeInit] = useState<string>('active');
 
   const [zoom, setZoom] = useState(1);
   const [baseZoom, setBaseZoom] = useState(1);
@@ -253,8 +211,6 @@ export function EditorScreen({
   const [revision, setRevision] = useState(0);
   const [selection, setSelection] = useState<GridRect | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [importSubOpen, setImportSubOpen] = useState(false);
-  const importModeRef = useRef<'place' | 'open'>('place');
   const [clipboard, setClipboard] = useState<{
     pixels: Uint32Array;
     w: number;
@@ -286,7 +242,6 @@ export function EditorScreen({
   );
   activeFrameIdRef.current =
     project.frames?.[project.activeFrameIndex ?? 0]?.id ?? 'frame-0';
-  const moreMenuRef = useRef<HTMLDivElement | null>(null);
   const themeCacheRef = useRef<ThemeCache | null>(null);
   const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchRef = useRef<{
@@ -451,254 +406,6 @@ export function EditorScreen({
     []
   );
 
-  const switchCanvas = useCallback(
-    (targetIdx: number) => {
-      const canvases = project.canvases ?? [];
-      const curIdx = project.activeCanvasIndex ?? 0;
-      if (targetIdx === curIdx || targetIdx < 0 || targetIdx >= canvases.length) return;
-      setIsPlaying(false);
-      if (floatingSelRef.current) {
-        commitFloatingSelection();
-      }
-      const curCanvas = canvases[curIdx];
-      if (curCanvas) {
-        canvasHistoryRef.current.set(curCanvas.id, {
-          undo: [...undoRef.current],
-          redo: [...redoRef.current],
-        });
-        canvasViewportRef.current.set(curCanvas.id, { zoom, baseZoom, pan });
-      }
-      const nextCanvases = [...canvases];
-      if (nextCanvases[curIdx]) {
-        const fIdx = project.activeFrameIndex ?? 0;
-        const syncedFrames = project.frames ? [...project.frames] : undefined;
-        if (syncedFrames && syncedFrames[fIdx]) {
-          syncedFrames[fIdx] = {
-            ...syncedFrames[fIdx],
-            layers: project.layers,
-            groups: project.groups,
-            activeLayerIndex: project.activeLayerIndex,
-          };
-        }
-        nextCanvases[curIdx] = {
-          ...nextCanvases[curIdx],
-          width: project.width,
-          height: project.height,
-          layers: project.layers,
-          groups: project.groups,
-          activeLayerIndex: project.activeLayerIndex,
-          frames: syncedFrames,
-          activeFrameIndex: project.activeFrameIndex,
-          fps: project.fps,
-        };
-      }
-      const target = nextCanvases[targetIdx];
-      const targetHist = canvasHistoryRef.current.get(target.id);
-      undoRef.current = targetHist ? [...targetHist.undo] : [];
-      redoRef.current = targetHist ? [...targetHist.redo] : [];
-      forceHistoryTick((t) => t + 1);
-      setSelection(null);
-      floatingSelRef.current = null;
-      setProject((prev) =>
-        ensureProjectCanvases({
-          ...prev,
-          canvases: nextCanvases,
-          activeCanvasIndex: targetIdx,
-        })
-      );
-    },
-    [project, zoom, baseZoom, pan]
-  );
-
-  const hideCanvasTab = useCallback(
-    (id: string) => {
-      if (openCanvasIds.length <= 1) return;
-      const canvases = project.canvases ?? [];
-      const curCanvas = canvases[project.activeCanvasIndex ?? 0];
-      const remainingIds = openCanvasIds.filter((oid) => oid !== id);
-      setOpenCanvasIds(remainingIds);
-      if (curCanvas?.id === id) {
-        const nextIdx = canvases.findIndex((c) => remainingIds.includes(c.id));
-        if (nextIdx >= 0) {
-          switchCanvas(nextIdx);
-        }
-      }
-    },
-    [openCanvasIds, project.canvases, project.activeCanvasIndex, switchCanvas]
-  );
-
-  const openCanvasTab = useCallback((id: string) => {
-    setOpenCanvasIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
-  }, []);
-
-  const addCanvasTab = useCallback(
-    (name: string, width: number, height: number) => {
-      setIsPlaying(false);
-      if (floatingSelRef.current) {
-        commitFloatingSelection();
-      }
-      const canvases = project.canvases ?? [];
-      const curIdx = project.activeCanvasIndex ?? 0;
-      const curCanvas = canvases[curIdx];
-      if (curCanvas) {
-        canvasHistoryRef.current.set(curCanvas.id, {
-          undo: [...undoRef.current],
-          redo: [...redoRef.current],
-        });
-        canvasViewportRef.current.set(curCanvas.id, { zoom, baseZoom, pan });
-      }
-      const nextCanvases = [...canvases];
-      if (nextCanvases[curIdx]) {
-        const fIdx = project.activeFrameIndex ?? 0;
-        const syncedFrames = project.frames ? [...project.frames] : undefined;
-        if (syncedFrames && syncedFrames[fIdx]) {
-          syncedFrames[fIdx] = {
-            ...syncedFrames[fIdx],
-            layers: project.layers,
-            groups: project.groups,
-            activeLayerIndex: project.activeLayerIndex,
-          };
-        }
-        nextCanvases[curIdx] = {
-          ...nextCanvases[curIdx],
-          width: project.width,
-          height: project.height,
-          layers: project.layers,
-          groups: project.groups,
-          activeLayerIndex: project.activeLayerIndex,
-          frames: syncedFrames,
-          activeFrameIndex: project.activeFrameIndex,
-          fps: project.fps,
-        };
-      }
-      const created = createCanvasDoc(name, width, height);
-      nextCanvases.push(created);
-      setOpenCanvasIds((prev) => [...prev, created.id]);
-      undoRef.current = [];
-      redoRef.current = [];
-      forceHistoryTick((t) => t + 1);
-      setSelection(null);
-      floatingSelRef.current = null;
-      setProject((prev) =>
-        ensureProjectCanvases({
-          ...prev,
-          canvases: nextCanvases,
-          activeCanvasIndex: nextCanvases.length - 1,
-        })
-      );
-      setRevision((r) => r + 1);
-    },
-    [project, zoom, baseZoom, pan]
-  );
-
-  const renameCanvasTab = useCallback((idx: number, name: string) => {
-    setProject((prev) => {
-      const canvases = prev.canvases ?? [];
-      if (!canvases[idx]) return prev;
-      const next = [...canvases];
-      next[idx] = { ...next[idx], name };
-      return { ...prev, canvases: next };
-    });
-    setRevision((r) => r + 1);
-  }, []);
-
-  const reorderCanvasTab = useCallback((fromIdx: number, toIdx: number) => {
-    if (fromIdx === toIdx) return;
-    setProject((prev) => {
-      const canvases = prev.canvases ?? [];
-      if (
-        fromIdx < 0 ||
-        toIdx < 0 ||
-        fromIdx >= canvases.length ||
-        toIdx >= canvases.length
-      ) {
-        return prev;
-      }
-      const curIdx = prev.activeCanvasIndex ?? 0;
-      const activeId = canvases[curIdx]?.id;
-      const next = [...canvases];
-      const [moved] = next.splice(fromIdx, 1);
-      next.splice(toIdx, 0, moved);
-      const nextActiveIdx = Math.max(0, next.findIndex((c) => c.id === activeId));
-      return {
-        ...prev,
-        canvases: next,
-        activeCanvasIndex: nextActiveIdx,
-      };
-    });
-    setRevision((r) => r + 1);
-  }, []);
-
-  const deleteCanvasTab = useCallback(
-    (idx: number) => {
-      const canvases = project.canvases ?? [];
-      if (canvases.length <= 1 || idx < 0 || idx >= canvases.length) return;
-      setIsPlaying(false);
-      const removed = canvases[idx];
-      if (removed) {
-        canvasHistoryRef.current.delete(removed.id);
-        canvasViewportRef.current.delete(removed.id);
-        setOpenCanvasIds((prev) => prev.filter((id) => id !== removed.id));
-      }
-      const curIdx = project.activeCanvasIndex ?? 0;
-      const nextCanvases = canvases.filter((_, i) => i !== idx);
-      const nextActiveIdx =
-        idx === curIdx
-          ? Math.min(idx, nextCanvases.length - 1)
-          : idx < curIdx
-            ? curIdx - 1
-            : curIdx;
-      const target = nextCanvases[nextActiveIdx];
-      if (idx === curIdx) {
-        const targetHist = canvasHistoryRef.current.get(target.id);
-        undoRef.current = targetHist ? [...targetHist.undo] : [];
-        redoRef.current = targetHist ? [...targetHist.redo] : [];
-        forceHistoryTick((t) => t + 1);
-        setSelection(null);
-        floatingSelRef.current = null;
-      }
-      setProject((prev) =>
-        ensureProjectCanvases({
-          ...prev,
-          canvases: nextCanvases,
-          activeCanvasIndex: nextActiveIdx,
-        })
-      );
-      setRevision((r) => r + 1);
-    },
-    [project.canvases, project.activeCanvasIndex]
-  );
-
-  const switchFrame = useCallback((targetIdx: number) => {
-    setIsPlaying(false);
-    setProject((prev) => {
-      const frames = prev.frames ?? [];
-      if (targetIdx < 0 || targetIdx >= frames.length) return prev;
-      const curIdx = prev.activeFrameIndex ?? 0;
-      const nextFrames = [...frames];
-      if (nextFrames[curIdx]) {
-        nextFrames[curIdx] = {
-          ...nextFrames[curIdx],
-          layers: prev.layers,
-          groups: prev.groups,
-          activeLayerIndex: prev.activeLayerIndex,
-        };
-      }
-      const target = nextFrames[targetIdx];
-      return {
-        ...prev,
-        frames: nextFrames,
-        activeFrameIndex: targetIdx,
-        layers: target.layers,
-        groups: target.groups,
-        activeLayerIndex: Math.min(target.activeLayerIndex, target.layers.length - 1),
-      };
-    });
-    setSelection(null);
-    floatingSelRef.current = null;
-    setRevision((r) => r + 1);
-  }, []);
-
   const pushHistory = useCallback((action: HistoryAction) => {
     undoRef.current.push(action);
     if (undoRef.current.length > 80) undoRef.current.shift();
@@ -706,195 +413,21 @@ export function EditorScreen({
     forceHistoryTick((t) => t + 1);
   }, []);
 
-  const reorderFrame = useCallback(
-    (fromIdx: number, toIdx: number) => {
-      if (fromIdx === toIdx) return;
-      setIsPlaying(false);
-      const frames = project.frames ?? [];
-      if (
-        fromIdx < 0 ||
-        toIdx < 0 ||
-        fromIdx >= frames.length ||
-        toIdx >= frames.length
-      ) {
-        return;
-      }
-      const curIdx = project.activeFrameIndex ?? 0;
-      const prevFrames = [...frames];
-      if (prevFrames[curIdx]) {
-        prevFrames[curIdx] = {
-          ...prevFrames[curIdx],
-          layers: project.layers,
-          groups: project.groups,
-          activeLayerIndex: project.activeLayerIndex,
-        };
-      }
-      const activeId = prevFrames[curIdx]?.id;
-      const nextFrames = [...prevFrames];
-      const [moved] = nextFrames.splice(fromIdx, 1);
-      nextFrames.splice(toIdx, 0, moved);
-      const nextActiveIdx = activeId
-        ? Math.max(0, nextFrames.findIndex((f) => f.id === activeId))
-        : toIdx;
-      const target = nextFrames[nextActiveIdx];
-
-      pushHistory({
-        kind: 'frames',
-        prevFrames,
-        prevActiveFrameIndex: curIdx,
-        nextFrames,
-        nextActiveFrameIndex: nextActiveIdx,
-      });
-      setProject((prev) => ({
-        ...prev,
-        frames: nextFrames,
-        activeFrameIndex: nextActiveIdx,
-        layers: target.layers,
-        groups: target.groups,
-        activeLayerIndex: Math.min(target.activeLayerIndex, target.layers.length - 1),
-      }));
-      setRevision((r) => r + 1);
-    },
-    [project, pushHistory]
-  );
-
-  const addFrame = useCallback(() => {
-    setIsPlaying(false);
-    const frames = project.frames ?? [];
-    const curIdx = project.activeFrameIndex ?? 0;
-    const prevFrames = [...frames];
-    if (prevFrames[curIdx]) {
-      prevFrames[curIdx] = {
-        ...prevFrames[curIdx],
-        layers: project.layers,
-        groups: project.groups,
-        activeLayerIndex: project.activeLayerIndex,
-      };
-    }
-    const newLayer: PixelLayer = {
-      id: `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      name: 'Layer 1',
-      visible: true,
-      opacity: 1,
-      groupId: null,
-      pixels: new Uint32Array(project.width * project.height),
-    };
-    const newFrame: PixelFrame = {
-      id: `frame_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      layers: [newLayer],
-      groups: [],
-      activeLayerIndex: 0,
-    };
-    const insertAt = curIdx + 1;
-    const nextFrames = [...prevFrames];
-    nextFrames.splice(insertAt, 0, newFrame);
-
-    pushHistory({
-      kind: 'frames',
-      prevFrames,
-      prevActiveFrameIndex: curIdx,
-      nextFrames,
-      nextActiveFrameIndex: insertAt,
-    });
-    setProject((prev) => ({
-      ...prev,
-      frames: nextFrames,
-      activeFrameIndex: insertAt,
-      layers: newFrame.layers,
-      groups: newFrame.groups,
-      activeLayerIndex: 0,
-    }));
-    setSelection(null);
-    floatingSelRef.current = null;
-    setRevision((r) => r + 1);
-  }, [project, pushHistory]);
-
-  const duplicateFrame = useCallback(() => {
-    setIsPlaying(false);
-    const frames = project.frames ?? [];
-    const curIdx = project.activeFrameIndex ?? 0;
-    const prevFrames = [...frames];
-    if (prevFrames[curIdx]) {
-      prevFrames[curIdx] = {
-        ...prevFrames[curIdx],
-        layers: project.layers,
-        groups: project.groups,
-        activeLayerIndex: project.activeLayerIndex,
-      };
-    }
-    const src = prevFrames[curIdx];
-    if (!src) return;
-    const clonedFrame: PixelFrame = {
-      id: `frame_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      layers: src.layers.map((l) => ({
-        ...l,
-        id: `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        pixels: new Uint32Array(l.pixels),
-      })),
-      groups: src.groups.map((g) => ({ ...g })),
-      activeLayerIndex: src.activeLayerIndex,
-    };
-    const insertAt = curIdx + 1;
-    const nextFrames = [...prevFrames];
-    nextFrames.splice(insertAt, 0, clonedFrame);
-
-    pushHistory({
-      kind: 'frames',
-      prevFrames,
-      prevActiveFrameIndex: curIdx,
-      nextFrames,
-      nextActiveFrameIndex: insertAt,
-    });
-    setProject((prev) => ({
-      ...prev,
-      frames: nextFrames,
-      activeFrameIndex: insertAt,
-      layers: clonedFrame.layers,
-      groups: clonedFrame.groups,
-      activeLayerIndex: clonedFrame.activeLayerIndex,
-    }));
-    setSelection(null);
-    floatingSelRef.current = null;
-    setRevision((r) => r + 1);
-  }, [project, pushHistory]);
-
-  const deleteFrame = useCallback(() => {
-    setIsPlaying(false);
-    const frames = project.frames ?? [];
-    if (frames.length <= 1) return;
-    const curIdx = project.activeFrameIndex ?? 0;
-    const prevFrames = [...frames];
-    if (prevFrames[curIdx]) {
-      prevFrames[curIdx] = {
-        ...prevFrames[curIdx],
-        layers: project.layers,
-        groups: project.groups,
-        activeLayerIndex: project.activeLayerIndex,
-      };
-    }
-    const nextFrames = prevFrames.filter((_, idx) => idx !== curIdx);
-    const nextIdx = Math.min(curIdx, nextFrames.length - 1);
-    const target = nextFrames[nextIdx];
-
-    pushHistory({
-      kind: 'frames',
-      prevFrames,
-      prevActiveFrameIndex: curIdx,
-      nextFrames,
-      nextActiveFrameIndex: nextIdx,
-    });
-    setProject((prev) => ({
-      ...prev,
-      frames: nextFrames,
-      activeFrameIndex: nextIdx,
-      layers: target.layers,
-      groups: target.groups,
-      activeLayerIndex: Math.min(target.activeLayerIndex, target.layers.length - 1),
-    }));
-    setSelection(null);
-    floatingSelRef.current = null;
-    setRevision((r) => r + 1);
-  }, [project, pushHistory]);
+  const {
+    switchFrame,
+    reorderFrame,
+    addFrame,
+    duplicateFrame,
+    deleteFrame,
+  } = useTimelineFrames({
+    project,
+    setProject,
+    pushHistory,
+    floatingSelRef,
+    setSelection,
+    setIsPlaying,
+    setRevision,
+  });
 
   const pushAction = useCallback(
     (action: DrawAction) => {
@@ -1212,30 +745,16 @@ export function EditorScreen({
   }, [draftShortcuts]);
 
   useEffect(() => {
-    if (!showMoreMenu && !showExportModal && !showHelpModal) return;
+    if (!showExportModal && !showHelpModal) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setShowMoreMenu(false);
         setShowExportModal(false);
         if (showHelpModal) attemptCloseShortcuts();
       }
     };
-    const onPointerDown = (e: PointerEvent) => {
-      if (
-        showMoreMenu &&
-        moreMenuRef.current &&
-        !moreMenuRef.current.contains(e.target as Node)
-      ) {
-        setShowMoreMenu(false);
-      }
-    };
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('pointerdown', onPointerDown);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('pointerdown', onPointerDown);
-    };
-  }, [showMoreMenu, showExportModal, showHelpModal, attemptCloseShortcuts]);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showExportModal, showHelpModal, attemptCloseShortcuts]);
   const screenToGrid = (clientX: number, clientY: number): [number, number] => {
     const rect = viewportRef.current!.getBoundingClientRect();
     const gx = Math.floor((clientX - rect.left - pan.x) / zoom);
@@ -1553,6 +1072,40 @@ export function EditorScreen({
     setSelection(null);
   }, [project]);
 
+  const {
+    switchCanvas,
+    hideCanvasTab,
+    openCanvasTab,
+    addCanvasTab,
+    renameCanvasTab,
+    reorderCanvasTab,
+    deleteCanvasTab,
+    createCanvasFolder,
+    renameCanvasFolder,
+    toggleCanvasFolder,
+    deleteCanvasFolder,
+    moveCanvasFolder,
+    moveCanvasToFolder,
+  } = useCanvasTabs({
+    project,
+    setProject,
+    openCanvasIds,
+    setOpenCanvasIds,
+    zoom,
+    baseZoom,
+    pan,
+    undoRef,
+    redoRef,
+    canvasHistoryRef,
+    canvasViewportRef,
+    floatingSelRef,
+    commitFloatingSelection,
+    forceHistoryTick,
+    setSelection,
+    setIsPlaying,
+    setRevision,
+  });
+
   const resizeFloatingSelection = useCallback(
     (newW: number, newH: number, nextLeft?: number, nextTop?: number) => {
       const fl = floatingSelRef.current;
@@ -1596,10 +1149,10 @@ export function EditorScreen({
   );
 
   const handleImportFile = useCallback(
-    async (file: File) => {
+    async (file: File, mode: 'place' | 'open' = 'place') => {
       try {
         const imported = await importProjectFromFile(file);
-        if (importModeRef.current === 'open') {
+        if (mode === 'open') {
           setIsPlaying(false);
           if (floatingSelRef.current) {
             commitFloatingSelection();
@@ -2814,880 +2367,57 @@ export function EditorScreen({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <header
-        className="editor-header"
-        style={{
-          height: 54,
-          background: 'var(--surface)',
-          borderBottom: '1px solid var(--border)',
-          display: 'flex',
-          alignItems: 'center',
-          padding: '0 10px',
-          gap: 10,
-          position: 'relative',
-          zIndex: 45,
+      <EditorHeader
+        projectName={project.name}
+        onRenameProject={(name) => setProject((p) => ({ ...p, name }))}
+        saveStatus={saveStatus}
+        onSaveProject={async () => {
+          setSaveStatus('saving');
+          try {
+            await saveActiveCanvas(latestProjectRef.current);
+            setSaveStatus('saved');
+          } catch {
+            setSaveStatus('error');
+          }
         }}
-      >
-        <input
-          ref={importInputRef}
-          type="file"
-          accept="image/*,.apxl,.ase,.aseprite"
-          style={{ display: 'none' }}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) handleImportFile(f);
-            e.target.value = '';
-          }}
-        />
-
-        {/* Left: Menu + Project Identity */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexShrink: 0 }}>
-          <div ref={moreMenuRef} style={{ position: 'relative' }}>
-            <button
-              type="button"
-              className="icon-btn"
-              aria-label="Main menu"
-              aria-expanded={showMoreMenu}
-              aria-haspopup="menu"
-              title="Menu"
-              onClick={() => setShowMoreMenu((v) => !v)}
-            >
-              <Menu size={19} />
-            </button>
-
-            {showMoreMenu && (
-              <div
-                role="menu"
-                className="floating-card menu-pop"
-                style={{
-                  position: 'absolute',
-                  top: 44,
-                  left: 0,
-                  width: 220,
-                  padding: 6,
-                  background: 'var(--surface)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 2,
-                  zIndex: 60,
-                  transformOrigin: 'top left',
-                }}
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn"
-                  style={{ border: 'none', justifyContent: 'flex-start' }}
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    onBack();
-                  }}
-                >
-                  <Home size={14} /> Home
-                </button>
-                <div
-                  style={{ position: 'relative' }}
-                  onMouseEnter={() => setImportSubOpen(true)}
-                  onMouseLeave={() => setImportSubOpen(false)}
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    aria-haspopup="menu"
-                    aria-expanded={importSubOpen}
-                    className="btn"
-                    style={{ width: '100%', border: 'none', justifyContent: 'space-between' }}
-                    onClick={() => setImportSubOpen((v) => !v)}
-                  >
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                      <ImagePlus size={14} /> Import
-                    </span>
-                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>▶</span>
-                  </button>
-                  {importSubOpen && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        ...(typeof window !== 'undefined' && window.innerWidth < 400
-                          ? { left: 0, top: '100%', paddingTop: 4 }
-                          : { left: '100%', top: -4, paddingLeft: 4 }),
-                        zIndex: 61,
-                      }}
-                    >
-                      <div
-                        role="menu"
-                        className="floating-card menu-pop"
-                        style={{
-                          width: 176,
-                          padding: 6,
-                          background: 'var(--surface)',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 2,
-                          transformOrigin: 'top left',
-                        }}
-                      >
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="btn"
-                          style={{ border: 'none', justifyContent: 'flex-start' }}
-                          onClick={() => {
-                            importModeRef.current = 'place';
-                            setImportSubOpen(false);
-                            setShowMoreMenu(false);
-                            importInputRef.current?.click();
-                          }}
-                        >
-                          Place into Canvas
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="btn"
-                          style={{ border: 'none', justifyContent: 'flex-start' }}
-                          onClick={() => {
-                            importModeRef.current = 'open';
-                            setImportSubOpen(false);
-                            setShowMoreMenu(false);
-                            importInputRef.current?.click();
-                          }}
-                        >
-                          Import as New Tab
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn"
-                  style={{ border: 'none', justifyContent: 'space-between' }}
-                  onClick={async () => {
-                    setShowMoreMenu(false);
-                    setSaveStatus('saving');
-                    try {
-                      await saveProject(project);
-                      setSaveStatus('saved');
-                    } catch {
-                      setSaveStatus('error');
-                    }
-                  }}
-                >
-                  <span>Save</span>
-                  <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
-                    Ctrl+S
-                  </span>
-                </button>
-                <div style={{ height: 1, background: 'var(--border)', margin: '3px 4px' }} />
-                <div
-                  style={{ position: 'relative' }}
-                  onMouseEnter={() => setOptionsSubOpen(true)}
-                  onMouseLeave={() => setOptionsSubOpen(false)}
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    aria-haspopup="menu"
-                    aria-expanded={optionsSubOpen}
-                    className="btn"
-                    style={{ width: '100%', border: 'none', justifyContent: 'space-between' }}
-                    onClick={() => setOptionsSubOpen((v) => !v)}
-                  >
-                    <span>Settings</span>
-                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>▶</span>
-                  </button>
-                  {optionsSubOpen && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        ...(typeof window !== 'undefined' && window.innerWidth < 400
-                          ? { left: 0, top: '100%', paddingTop: 4 }
-                          : { left: '100%', top: -4, paddingLeft: 4 }),
-                        zIndex: 61,
-                      }}
-                    >
-                      <div
-                        role="menu"
-                        className="floating-card menu-pop"
-                        style={{
-                          width: 170,
-                          padding: 6,
-                          background: 'var(--surface)',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 2,
-                          transformOrigin: 'top left',
-                        }}
-                      >
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="btn"
-                          style={{ border: 'none', justifyContent: 'flex-start' }}
-                          onClick={() => {
-                            setOptionsSubOpen(false);
-                            setShowMoreMenu(false);
-                            setShowSettingsModal(true);
-                          }}
-                        >
-                          Interface Scale…
-                        </button>
-                        <button
-                          type="button"
-                          role="menuitem"
-                          className="btn"
-                          style={{ border: 'none', justifyContent: 'flex-start' }}
-                          onClick={() => {
-                            setOptionsSubOpen(false);
-                            setShowMoreMenu(false);
-                            setShowHelpModal(true);
-                          }}
-                        >
-                          Shortcuts…
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn"
-                  style={{ border: 'none', justifyContent: 'flex-start' }}
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    setShowResizeModal(true);
-                  }}
-                >
-                  Resize Canvas…
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="btn"
-                  style={{ border: 'none', justifyContent: 'flex-start' }}
-                  onClick={() => {
-                    setShowMoreMenu(false);
-                    setTiledMode((v) => !v);
-                  }}
-                >
-                  {tiledMode ? 'Tiled / Seamless: On' : 'Tiled / Seamless Mode'}
-                </button>
-              </div>
-            )}
-          </div>
-
-          <div style={{ minWidth: 0, maxWidth: 170 }}>
-            {editingName ? (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const trimmed = nameDraft.trim();
-                  if (trimmed) setProject((p) => ({ ...p, name: trimmed }));
-                  setEditingName(false);
-                }}
-              >
-                <input
-                  autoFocus
-                  aria-label="Project name"
-                  value={nameDraft}
-                  onChange={(e) => setNameDraft(e.target.value)}
-                  onBlur={() => {
-                    const trimmed = nameDraft.trim();
-                    if (trimmed) setProject((p) => ({ ...p, name: trimmed }));
-                    setEditingName(false);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') {
-                      setEditingName(false);
-                    }
-                  }}
-                  style={{
-                    width: '100%',
-                    padding: '1px 5px',
-                    borderRadius: 5,
-                    border: '1px solid var(--accent)',
-                    background: 'var(--surface-elevated)',
-                    color: 'var(--text-primary)',
-                    fontWeight: 700,
-                    fontSize: 13.5,
-                    outline: 'none',
-                  }}
-                />
-              </form>
-            ) : (
-              <h1
-                onDoubleClick={() => {
-                  setNameDraft(project.name);
-                  setEditingName(true);
-                }}
-                title="Double-click to rename"
-                style={{
-                  margin: 0,
-                  fontWeight: 700,
-                  fontSize: 13.5,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  cursor: 'text',
-                }}
-              >
-                {project.name}
-              </h1>
-            )}
-            <div
-              className="mono"
-              style={{
-                fontSize: 11,
-                lineHeight: 1.3,
-                color: 'var(--text-secondary)',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 5,
-              }}
-            >
-              <span>
-                {project.width}×{project.height}
-              </span>
-              <span
-                role="status"
-                aria-label={
-                  saveStatus === 'saving'
-                    ? 'Saving project'
-                    : saveStatus === 'error'
-                      ? 'Save failed'
-                      : 'All changes saved'
-                }
-                title={
-                  saveStatus === 'saving'
-                    ? 'Saving…'
-                    : saveStatus === 'error'
-                      ? 'Save failed'
-                      : 'Saved'
-                }
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  marginLeft: 2,
-                  color:
-                    saveStatus === 'error'
-                      ? 'var(--danger)'
-                      : saveStatus === 'saving'
-                        ? 'var(--accent)'
-                        : 'var(--text-muted)',
-                  transition: 'color 180ms ease, transform 180ms ease',
-                }}
-              >
-                {saveStatus === 'saving' ? (
-                  <Loader2 size={12} className="spin" />
-                ) : saveStatus === 'error' ? (
-                  <AlertCircle size={12} />
-                ) : (
-                  <Check size={12} />
-                )}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Separator between file name and tool controls */}
-        <div
-          className="editor-header-divider"
-          style={{ width: 1, height: 26, background: 'var(--border)', flexShrink: 0 }}
-        />
-
-        {/* Left-aligned Tool Options + Inline Palette */}
-        <div
-          className="editor-header-center"
-          style={{
-            flex: 1,
-            minWidth: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'flex-start',
-            gap: 8,
-          }}
-        >
-
-          <div
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 4,
-              height: 34,
-              padding: '0 4px',
-              borderRadius: 8,
-              border: '1px solid var(--border)',
-              background: 'var(--surface-elevated)',
-            }}
-          >
-            <button
-              type="button"
-              className="icon-btn"
-              style={{ width: 26, height: 26, borderRadius: 6 }}
-              aria-label={`Brush shape: ${brushShape}. Click to switch`}
-              title={`Brush shape: ${brushShape} (click to switch)`}
-              onClick={() => setBrushShape((s) => (s === 'round' ? 'square' : 'round'))}
-            >
-              {brushShape === 'round' ? (
-                <Circle size={13} fill="currentColor" />
-              ) : (
-                <Square size={13} fill="currentColor" />
-              )}
-            </button>
-            <div
-              aria-hidden="true"
-              style={{ width: 1, height: 16, background: 'var(--border)', flexShrink: 0 }}
-            />
-            {editingBrushSize ? (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const parsed = parseInt(brushSizeDraft, 10);
-                  if (!isNaN(parsed)) {
-                    setBrushSize(Math.max(1, Math.min(128, parsed)));
-                  }
-                  setEditingBrushSize(false);
-                }}
-                style={{ display: 'inline-flex', alignItems: 'center' }}
-              >
-                <input
-                  autoFocus
-                  type="number"
-                  aria-label="Brush size in pixels"
-                  min={1}
-                  max={128}
-                  value={brushSizeDraft}
-                  onChange={(e) => setBrushSizeDraft(e.target.value)}
-                  onBlur={() => {
-                    const parsed = parseInt(brushSizeDraft, 10);
-                    if (!isNaN(parsed)) {
-                      setBrushSize(Math.max(1, Math.min(128, parsed)));
-                    }
-                    setEditingBrushSize(false);
-                  }}
-                  className="mono"
-                  style={{
-                    width: 46,
-                    height: 24,
-                    padding: '0 4px',
-                    borderRadius: 6,
-                    border: '1px solid var(--accent)',
-                    background: 'var(--surface)',
-                    color: 'var(--text-primary)',
-                    fontSize: 12,
-                    textAlign: 'center',
-                  }}
-                />
-              </form>
-            ) : (
-              <button
-                type="button"
-                className="btn mono"
-                style={{
-                  border: 'none',
-                  minWidth: 44,
-                  height: 26,
-                  padding: '0 6px',
-                  justifyContent: 'center',
-                  fontSize: 12,
-                  fontWeight: 700,
-                  background: 'transparent',
-                  borderRadius: 6,
-                  cursor: 'ew-resize',
-                  touchAction: 'none',
-                }}
-                aria-label={`Brush size ${brushSize}px. Drag left or right to resize, or click to type`}
-                title="Drag left/right to resize • Click to type"
-                onPointerDown={(e) => {
-                  e.preventDefault();
-                  const startX = e.clientX;
-                  const startSize = brushSize;
-                  let moved = false;
-                  setPreviewingSize(true);
-
-                  const onMove = (ev: PointerEvent) => {
-                    const dx = ev.clientX - startX;
-                    if (Math.abs(dx) >= 4) moved = true;
-                    if (moved) {
-                      const nextSize = Math.max(1, Math.min(128, Math.round(startSize + dx / 6)));
-                      setBrushSize(nextSize);
-                    }
-                  };
-
-                  const onUp = () => {
-                    setPreviewingSize(false);
-                    window.removeEventListener('pointermove', onMove);
-                    window.removeEventListener('pointerup', onUp);
-                    window.removeEventListener('pointercancel', onUp);
-                    if (!moved) {
-                      setBrushSizeDraft(String(startSize));
-                      setEditingBrushSize(true);
-                    }
-                  };
-
-                  window.addEventListener('pointermove', onMove);
-                  window.addEventListener('pointerup', onUp);
-                  window.addEventListener('pointercancel', onUp);
-                }}
-              >
-                {brushSize}px
-              </button>
-            )}
-          </div>
-
-          <div
-            ref={gridMenuRef}
-            style={{
-              position: 'relative',
-              display: 'inline-flex',
-              alignItems: 'center',
-              borderRadius: 10,
-              border: gridMode !== 'off'
-                ? '1px solid color-mix(in srgb, var(--accent) 50%, transparent)'
-                : '1px solid var(--border)',
-              background: gridMode !== 'off' ? 'var(--accent-container)' : 'var(--surface-elevated)',
-              padding: 2,
-              gap: 1,
-            }}
-          >
-            <button
-              type="button"
-              className="icon-btn"
-              style={{
-                width: 'auto',
-                minWidth: 32,
-                height: 32,
-                padding: '0 6px',
-                gap: 4,
-                border: 'none',
-                background: 'transparent',
-                color: gridMode !== 'off' ? 'var(--accent)' : 'var(--text-secondary)',
-              }}
-              aria-label={
-                gridMode !== 'off'
-                  ? `Grid: ${gridMode}. Click to turn off`
-                  : `Turn on ${lastGridMode} grid`
-              }
-              aria-pressed={gridMode !== 'off'}
-              title={
-                gridMode !== 'off'
-                  ? `Grid: ${gridMode} (click to turn off)`
-                  : `Grid: off (click to enable ${lastGridMode})`
-              }
-              onClick={() => {
-                setGridMenuOpen(false);
-                setGridMode((cur) => (cur === 'off' ? lastGridMode : 'off'));
-              }}
-            >
-              {(gridMode === 'tile' || (gridMode === 'off' && lastGridMode === 'tile')) ? (
-                <Grid2x2 size={17} />
-              ) : (
-                <Grid3x3 size={17} />
-              )}
-              {gridMode !== 'off' && (
-                <span className="mono" style={{ fontSize: 10, fontWeight: 700 }}>
-                  {gridMode === 'pixel' ? '1' : gridMode === 'tile' ? '16' : '1+16'}
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              className="icon-btn"
-              style={{
-                width: 22,
-                height: 32,
-                border: 'none',
-                background: 'transparent',
-                color: gridMode !== 'off' ? 'var(--accent)' : 'var(--text-secondary)',
-              }}
-              aria-label="Choose grid mode"
-              aria-haspopup="menu"
-              aria-expanded={gridMenuOpen}
-              title="Choose grid mode (Pixel 1×1 / Tile 16×16 / Both)"
-              onClick={() => setGridMenuOpen((v) => !v)}
-            >
-              <ChevronDown size={12} />
-            </button>
-            {gridMenuOpen && (() => {
-              const rect = gridMenuRef.current?.getBoundingClientRect();
-              const menuLeft = rect ? Math.max(8, Math.min(rect.left, window.innerWidth - 180)) : 8;
-              const menuTop = rect ? rect.bottom + 6 : 54;
-              return (
-                <div
-                  role="menu"
-                  aria-label="Grid mode"
-                  className="floating-card menu-pop"
-                  style={{
-                    position: 'fixed',
-                    top: menuTop,
-                    left: menuLeft,
-                    width: 172,
-                    padding: 5,
-                    background: 'var(--surface)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 2,
-                    zIndex: 60,
-                    transformOrigin: 'top left',
-                  }}
-                >
-                  {(
-                    [
-                      ['pixel', 'Pixel (1×1)', <Grid3x3 key="px" size={14} />],
-                      ['tile', 'Tile (16×16)', <Grid2x2 key="tl" size={14} />],
-                      ['both', 'Both (1×1 + 16×16)', <Grid3x3 key="bt" size={14} />],
-                    ] as Array<[Exclude<GridMode, 'off'>, string, React.ReactNode]>
-                  ).map(([mode, label, icon]) => {
-                    const active = gridMode === mode;
-                    return (
-                      <button
-                        key={mode}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={active}
-                        className="btn"
-                        style={{
-                          border: 'none',
-                          justifyContent: 'space-between',
-                          fontSize: 12,
-                          color: active ? 'var(--accent)' : 'var(--text-primary)',
-                          background: active ? 'var(--accent-container)' : 'transparent',
-                        }}
-                        onClick={() => {
-                          setLastGridMode(mode);
-                          setGridMode(mode);
-                          setGridMenuOpen(false);
-                        }}
-                      >
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                          {icon}
-                          {label}
-                        </span>
-                        {active && <Check size={13} />}
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-          </div>
-          <div
-            ref={mirrorMenuRef}
-            style={{
-              position: 'relative',
-              display: 'inline-flex',
-              alignItems: 'center',
-              borderRadius: 10,
-              border: mirror !== 'none'
-                ? '1px solid color-mix(in srgb, var(--accent) 50%, transparent)'
-                : '1px solid var(--border)',
-              background: mirror !== 'none' ? 'var(--accent-container)' : 'var(--surface-elevated)',
-              padding: 2,
-              gap: 1,
-            }}
-          >
-            <button
-              type="button"
-              className="icon-btn"
-              style={{
-                width: 'auto',
-                minWidth: 32,
-                height: 32,
-                padding: '0 6px',
-                gap: 4,
-                border: 'none',
-                background: 'transparent',
-                color: mirror !== 'none' ? 'var(--accent)' : 'var(--text-secondary)',
-              }}
-              aria-label={
-                mirror !== 'none'
-                  ? `Mirror: ${mirror}. Click to turn off`
-                  : `Turn on ${lastMirrorMode} mirror`
-              }
-              aria-pressed={mirror !== 'none'}
-              title={
-                mirror !== 'none'
-                  ? `Mirror: ${mirror} (click to turn off)`
-                  : `Mirror: off (click to enable ${lastMirrorMode})`
-              }
-              onClick={() => {
-                setMirrorMenuOpen(false);
-                setMirror((cur) => (cur === 'none' ? lastMirrorMode : 'none'));
-              }}
-            >
-              {(mirror === 'vertical' || (mirror === 'none' && lastMirrorMode === 'vertical')) ? (
-                <FlipVertical size={17} />
-              ) : (
-                <FlipHorizontal size={17} />
-              )}
-              {mirror !== 'none' && (
-                <span className="mono" style={{ fontSize: 10, fontWeight: 700 }}>
-                  {mirror === 'horizontal' ? 'H' : mirror === 'vertical' ? 'V' : 'Q'}
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              className="icon-btn"
-              style={{
-                width: 22,
-                height: 32,
-                border: 'none',
-                background: 'transparent',
-                color: mirror !== 'none' ? 'var(--accent)' : 'var(--text-secondary)',
-              }}
-              aria-label="Choose mirror axis"
-              aria-haspopup="menu"
-              aria-expanded={mirrorMenuOpen}
-              title="Choose mirror axis (Horizontal / Vertical / Quad)"
-              onClick={() => setMirrorMenuOpen((v) => !v)}
-            >
-              <ChevronDown size={12} />
-            </button>
-            {mirrorMenuOpen && (() => {
-              const rect = mirrorMenuRef.current?.getBoundingClientRect();
-              const menuLeft = rect ? Math.max(8, Math.min(rect.left, window.innerWidth - 168)) : 8;
-              const menuTop = rect ? rect.bottom + 6 : 54;
-              return (
-                <div
-                  role="menu"
-                  aria-label="Mirror mode"
-                  className="floating-card menu-pop"
-                  style={{
-                    position: 'fixed',
-                    top: menuTop,
-                    left: menuLeft,
-                    width: 156,
-                    padding: 5,
-                    background: 'var(--surface)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 2,
-                    zIndex: 60,
-                    transformOrigin: 'top left',
-                  }}
-                >
-                  {(
-                    [
-                      ['horizontal', 'Horizontal (X)'],
-                      ['vertical', 'Vertical (Y)'],
-                      ['quad', 'Quad (X + Y)'],
-                    ] as Array<[Exclude<MirrorMode, 'none'>, string]>
-                  ).map(([mode, label]) => {
-                    const active = mirror === mode;
-                    return (
-                      <button
-                        key={mode}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={active}
-                        className="btn"
-                        style={{
-                          border: 'none',
-                          justifyContent: 'space-between',
-                          fontSize: 12,
-                          color: active ? 'var(--accent)' : 'var(--text-primary)',
-                          background: active ? 'var(--accent-container)' : 'transparent',
-                        }}
-                        onClick={() => {
-                          setLastMirrorMode(mode);
-                          setMirror(mode);
-                          setMirrorMenuOpen(false);
-                        }}
-                      >
-                        <span>{label}</span>
-                        {active && <Check size={13} />}
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-          </div>
-
-          <ColorPanel
-            activeColor={activeColor}
-            palette={palette}
-            isEyedropperActive={tool === 'eyedropper'}
-            onToggleEyedropper={() => onSelectTool('eyedropper')}
-            onSelectColor={(c) => setActiveColor(c)}
-            onSetPalette={(cols) => {
-              setPalette(cols);
-              setProject((p) => ({ ...p, sharedPalette: cols }));
-              setRevision((r) => r + 1);
-            }}
-          />
-        </div>
-
-        {/* Right Zone: Theme Switch & Export */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={theme === 'dark'}
-            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
-            title={theme === 'dark' ? 'Dark Theme (click for Light)' : 'Light Theme (click for Dark)'}
-            onClick={onToggleTheme}
-            style={{
-              position: 'relative',
-              width: 54,
-              height: 30,
-              borderRadius: 999,
-              border: '1px solid var(--border)',
-              background: 'var(--surface-elevated)',
-              padding: '0 6px',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              cursor: 'pointer',
-              color: 'var(--text-muted)',
-            }}
-          >
-            <Sun size={13} style={{ opacity: theme === 'light' ? 0 : 0.7 }} />
-            <Moon size={13} style={{ opacity: theme === 'dark' ? 0 : 0.7 }} />
-            <span
-              aria-hidden="true"
-              style={{
-                position: 'absolute',
-                top: 3,
-                left: theme === 'dark' ? 27 : 3,
-                width: 22,
-                height: 22,
-                borderRadius: '50%',
-                background: 'var(--accent)',
-                color: 'var(--on-accent)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                transition: 'left 180ms cubic-bezier(0.22, 1, 0.36, 1)',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
-              }}
-            >
-              {theme === 'dark' ? <Moon size={12} /> : <Sun size={12} />}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            className="btn primary"
-            style={{ height: 34, padding: '0 11px', fontSize: 12.5 }}
-            aria-label="Export sprite"
-            title="Export sprite"
-            onClick={() => setShowExportModal(true)}
-          >
-            <Download size={14} />
-            <span>Export</span>
-          </button>
-        </div>
-      </header>
+        onBack={onBack}
+        onImportFile={handleImportFile}
+        onOpenSettings={() => setShowSettingsModal(true)}
+        onOpenShortcuts={() => setShowHelpModal(true)}
+        onOpenResize={() => setShowResizeModal(true)}
+        tiledMode={tiledMode}
+        onToggleTiledMode={() => setTiledMode((v) => !v)}
+        brushShape={brushShape}
+        onToggleBrushShape={() => setBrushShape((s) => (s === 'round' ? 'square' : 'round'))}
+        brushSize={brushSize}
+        onChangeBrushSize={setBrushSize}
+        onPreviewingSizeChange={setPreviewingSize}
+        gridMode={gridMode}
+        onChangeGridMode={setGridMode}
+        mirror={mirror}
+        onChangeMirror={setMirror}
+        activeColor={activeColor}
+        palette={palette}
+        tool={tool}
+        onToggleEyedropper={() => onSelectTool('eyedropper')}
+        onSelectColor={(c) => setActiveColor(c)}
+        onSetPalette={(cols) => {
+          setPalette(cols);
+          setProject((p) => ({ ...p, sharedPalette: cols }));
+          setRevision((r) => r + 1);
+        }}
+        theme={theme}
+        onToggleTheme={onToggleTheme}
+        onOpenExport={() => {
+          setExportScopeInit('active');
+          setShowExportModal(true);
+        }}
+      />
 
       <main aria-label="Canvas workspace" style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <CanvasTabsBar
           canvases={project.canvases ?? []}
+          folders={project.canvasFolders ?? []}
           activeCanvasIndex={project.activeCanvasIndex ?? 0}
           openCanvasIds={openCanvasIds}
           open={tabsOpen}
@@ -3709,90 +2439,37 @@ export function EditorScreen({
           onRenameCanvas={renameCanvasTab}
           onReorderCanvas={reorderCanvasTab}
           onDeleteCanvas={deleteCanvasTab}
+          onCreateFolder={createCanvasFolder}
+          onRenameFolder={renameCanvasFolder}
+          onToggleFolder={toggleCanvasFolder}
+          onDeleteFolder={deleteCanvasFolder}
+          onExportFolder={(folderId) => {
+            setExportScopeInit(folderId);
+            setShowExportModal(true);
+          }}
+          onMoveFolder={moveCanvasFolder}
+          onMoveCanvasToFolder={moveCanvasToFolder}
           onCollapsedHudLeftChange={setCollapsedHudLeft}
         />
-        <div
-          aria-live="polite"
-          className="mono ui-scaled"
-          style={{
-            position: 'absolute',
-            top: tabsOpen ? 41 : 7,
-            left: tabsOpen ? 12 : collapsedHudLeft,
-            transition:
-              'top 220ms cubic-bezier(0.22, 1, 0.36, 1), left 220ms cubic-bezier(0.22, 1, 0.36, 1)',
-            zIndex: 31,
-            pointerEvents: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: 11,
+        <DebugHud
+          zoomPct={Math.round((zoom / baseZoom) * 100)}
+          tool={tool}
+          pixelPerfect={pixelPerfect}
+          mirror={mirror}
+          tiledMode={tiledMode}
+          tabsOpen={tabsOpen}
+          collapsedLeft={collapsedHudLeft}
+          onResetZoom={() => {
+            const canvas = viewportRef.current;
+            if (!canvas) return;
+            const rect = canvas.getBoundingClientRect();
+            setZoom(baseZoom);
+            setPan({
+              x: (rect.width - project.width * baseZoom) / 2,
+              y: (rect.height - project.height * baseZoom) / 2,
+            });
           }}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              const canvas = viewportRef.current;
-              if (!canvas) return;
-              const rect = canvas.getBoundingClientRect();
-              setZoom(baseZoom);
-              setPan({
-                x: (rect.width - project.width * baseZoom) / 2,
-                y: (rect.height - project.height * baseZoom) / 2,
-              });
-            }}
-            title="Click to reset zoom to 100%"
-            style={{
-              pointerEvents: 'auto',
-              width: 48,
-              height: 24,
-              flexShrink: 0,
-              background: 'color-mix(in srgb, var(--surface) 75%, transparent)',
-              border: '1px solid color-mix(in srgb, var(--border) 70%, transparent)',
-              borderRadius: 8,
-              padding: 0,
-              textAlign: 'center',
-              fontVariantNumeric: 'tabular-nums',
-              color: 'var(--text-primary)',
-              font: 'inherit',
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            {Math.round((zoom / baseZoom) * 100)}%
-          </button>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              height: 24,
-              color: 'var(--text-muted)',
-              background: 'color-mix(in srgb, var(--surface) 75%, transparent)',
-              padding: '0 8px',
-              borderRadius: 8,
-              border: '1px solid color-mix(in srgb, var(--border) 70%, transparent)',
-            }}
-          >
-            <span style={{ textTransform: 'capitalize', color: 'var(--text-secondary)' }}>
-              {tool}
-            </span>
-            {(tool === 'pencil' || tool === 'shade') && pixelPerfect && (
-              <span style={{ color: 'var(--accent)', fontWeight: 700 }}>
-                • Pixel Perfect
-              </span>
-            )}
-            {mirror !== 'none' && (
-              <span style={{ color: 'var(--text-secondary)' }}>
-                • Mirror: {mirror}
-              </span>
-            )}
-            {tiledMode && (
-              <span style={{ color: 'var(--text-secondary)' }}>
-                • Tiled
-              </span>
-            )}
-          </div>
-        </div>
+        />
         <canvas
           ref={viewportRef}
           aria-label="Pixel art canvas"
@@ -4149,227 +2826,76 @@ export function EditorScreen({
             popupTop = topScreen >= 12 ? topScreen : Math.min(vh - 56, bottomScreen);
           }
           return (
-            <div
-              className="floating-card menu-pop"
-              style={{
-                position: 'absolute',
-                left: popupLeft,
-                top: popupTop,
-                padding: 4,
-                display: 'flex',
-                gap: 2,
-                zIndex: 30,
-                transformOrigin: 'top center',
+            <SelectionActionBar
+              hasCurve={hasCurve}
+              selection={selection}
+              popupLeft={popupLeft}
+              popupTop={popupTop}
+              hasClipboard={Boolean(clipboard)}
+              hasFloating={Boolean(floatingSelRef.current)}
+              onAddCurvePoint={() => {
+                if (curveEndRef.current && curveControlsRef.current.length > 0) {
+                  const last = curveControlsRef.current[curveControlsRef.current.length - 1];
+                  curveControlsRef.current.push({
+                    x: (last.x + curveEndRef.current.x) / 2,
+                    y: (last.y + curveEndRef.current.y) / 2,
+                  });
+                  updateCurvePreview();
+                }
               }}
-            >
-              {hasCurve ? (
-                <>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label="Add curve control point"
-                    title="Add control point"
-                    onClick={() => {
-                      if (curveEndRef.current && curveControlsRef.current.length > 0) {
-                        const last =
-                          curveControlsRef.current[curveControlsRef.current.length - 1];
-                        curveControlsRef.current.push({
-                          x: (last.x + curveEndRef.current.x) / 2,
-                          y: (last.y + curveEndRef.current.y) / 2,
-                        });
-                        updateCurvePreview();
-                      }
-                    }}
-                  >
-                    <Plus size={18} />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn active"
-                    aria-label="Apply curve"
-                    title="Apply curve"
-                    onClick={commitCurve}
-                  >
-                    <Check size={18} />
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label="Cancel curve"
-                    title="Cancel curve"
-                    onClick={cancelCurve}
-                  >
-                    <X size={18} />
-                  </button>
-                </>
-              ) : (
-                selection && (
-                  <>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title="Copy selection"
-                      aria-label="Copy selection"
-                      onClick={() => {
-                        if (floatingSelRef.current) {
-                          setClipboard({
-                            pixels: new Uint32Array(floatingSelRef.current.pixels),
-                            w: floatingSelRef.current.w,
-                            h: floatingSelRef.current.h,
-                          });
-                          return;
-                        }
-                        const layer = project.layers[project.activeLayerIndex];
-                        const buf = new Uint32Array(selection.width * selection.height);
-                        for (let sy = 0; sy < selection.height; sy++) {
-                          for (let sx = 0; sx < selection.width; sx++) {
-                            const gx = selection.left + sx;
-                            const gy = selection.top + sy;
-                            if (gx >= 0 && gy >= 0 && gx < project.width && gy < project.height) {
-                              buf[sy * selection.width + sx] =
-                                layer.pixels[gy * project.width + gx];
-                            }
-                          }
-                        }
-                        setClipboard({ pixels: buf, w: selection.width, h: selection.height });
-                      }}
-                    >
-                      <Copy size={16} />
-                    </button>
-                    {clipboard && (
-                      <button
-                        type="button"
-                        className="icon-btn"
-                        title="Paste as movable selection"
-                        aria-label="Paste"
-                        onClick={() => {
-                          commitFloatingSelection();
-                          const sx0 = Math.floor((project.width - clipboard.w) / 2);
-                          const sy0 = Math.floor((project.height - clipboard.h) / 2);
-                          floatingSelRef.current = {
-                            pixels: new Uint32Array(clipboard.pixels),
-                            w: clipboard.w,
-                            h: clipboard.h,
-                            clearedOrig: new Map(),
-                          };
-                          const nextRect = {
-                            left: sx0,
-                            top: sy0,
-                            width: clipboard.w,
-                            height: clipboard.h,
-                          };
-                          setSelection(nextRect);
-                          syncFloatingPreview(nextRect);
-                        }}
-                      >
-                        <Plus size={16} />
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title="Flip Horizontal"
-                      aria-label="Flip selection horizontal"
-                      onClick={() => flipSelection('h')}
-                    >
-                      <FlipHorizontal size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title="Flip Vertical"
-                      aria-label="Flip selection vertical"
-                      onClick={() => flipSelection('v')}
-                    >
-                      <FlipVertical size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title="Rotate 90°"
-                      aria-label="Rotate selection 90 degrees"
-                      onClick={rotateSelection90}
-                    >
-                      <RotateCw size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title="Delete selection pixels (Backspace / Delete)"
-                      aria-label="Delete selection pixels"
-                      onClick={deleteSelectionPixels}
-                    >
-                      <Scissors size={16} />
-                    </button>
-                    {floatingSelRef.current && (
-                      <>
-                        <div
-                          style={{
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 4,
-                            padding: '0 4px',
-                            fontSize: 11,
-                            color: 'var(--text-secondary)',
-                          }}
-                        >
-                          <span>W</span>
-                          <input
-                            type="number"
-                            aria-label="Selection width"
-                            min={1}
-                            max={1024}
-                            value={selection.width}
-                            onChange={(e) => {
-                              const w = parseInt(e.target.value, 10);
-                              if (!isNaN(w) && w >= 1) {
-                                resizeFloatingSelection(w, selection.height);
-                              }
-                            }}
-                            className="field-input mono"
-                            style={{ width: 48, padding: '2px 4px', fontSize: 11 }}
-                          />
-                          <span>×</span>
-                          <input
-                            type="number"
-                            aria-label="Selection height"
-                            min={1}
-                            max={1024}
-                            value={selection.height}
-                            onChange={(e) => {
-                              const h = parseInt(e.target.value, 10);
-                              if (!isNaN(h) && h >= 1) {
-                                resizeFloatingSelection(selection.width, h);
-                              }
-                            }}
-                            className="field-input mono"
-                            style={{ width: 48, padding: '2px 4px', fontSize: 11 }}
-                          />
-                        </div>
-                        <button
-                          type="button"
-                          className="icon-btn active"
-                          title="Apply move/transform (Enter)"
-                          aria-label="Apply selection transform"
-                          onClick={commitFloatingSelection}
-                        >
-                          <Check size={16} />
-                        </button>
-                      </>
-                    )}
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title="Deselect / Cancel (Escape)"
-                      aria-label="Deselect"
-                      onClick={cancelFloatingSelection}
-                    >
-                      <X size={16} />
-                    </button>
-                  </>
-                )
-              )}
-            </div>
+              onCommitCurve={commitCurve}
+              onCancelCurve={cancelCurve}
+              onCopySelection={() => {
+                if (!selection) return;
+                if (floatingSelRef.current) {
+                  setClipboard({
+                    pixels: new Uint32Array(floatingSelRef.current.pixels),
+                    w: floatingSelRef.current.w,
+                    h: floatingSelRef.current.h,
+                  });
+                  return;
+                }
+                const layer = project.layers[project.activeLayerIndex];
+                const buf = new Uint32Array(selection.width * selection.height);
+                for (let sy = 0; sy < selection.height; sy++) {
+                  for (let sx = 0; sx < selection.width; sx++) {
+                    const gx = selection.left + sx;
+                    const gy = selection.top + sy;
+                    if (gx >= 0 && gy >= 0 && gx < project.width && gy < project.height) {
+                      buf[sy * selection.width + sx] = layer.pixels[gy * project.width + gx];
+                    }
+                  }
+                }
+                setClipboard({ pixels: buf, w: selection.width, h: selection.height });
+              }}
+              onPasteSelection={() => {
+                if (!clipboard) return;
+                commitFloatingSelection();
+                const sx0 = Math.floor((project.width - clipboard.w) / 2);
+                const sy0 = Math.floor((project.height - clipboard.h) / 2);
+                floatingSelRef.current = {
+                  pixels: new Uint32Array(clipboard.pixels),
+                  w: clipboard.w,
+                  h: clipboard.h,
+                  clearedOrig: new Map(),
+                };
+                const nextRect = {
+                  left: sx0,
+                  top: sy0,
+                  width: clipboard.w,
+                  height: clipboard.h,
+                };
+                setSelection(nextRect);
+                syncFloatingPreview(nextRect);
+              }}
+              onFlipH={() => flipSelection('h')}
+              onFlipV={() => flipSelection('v')}
+              onRotate90={rotateSelection90}
+              onDeletePixels={deleteSelectionPixels}
+              onResizeFloating={resizeFloatingSelection}
+              onCommitFloating={commitFloatingSelection}
+              onCancelFloating={cancelFloatingSelection}
+            />
           );
         })()}
 
@@ -4673,205 +3199,45 @@ export function EditorScreen({
           onToggleOnionSkin={() => setOnionSkin((v) => !v)}
         />
 
-        {tool === 'move' && (
-          <div
-            className="floating-card"
-            style={{
-              position: 'absolute',
-              top: 12,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              padding: '4px 6px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              zIndex: 30,
-            }}
-          >
-            <button
-              type="button"
-              className={`btn ${!moveAllLayers ? 'primary' : ''}`}
-              style={{ padding: '4px 9px', fontSize: 11.5 }}
-              onClick={() => setMoveAllLayers(false)}
-            >
-              Selected Layer(s)
-            </button>
-            <button
-              type="button"
-              className={`btn ${moveAllLayers ? 'primary' : ''}`}
-              style={{ padding: '4px 9px', fontSize: 11.5 }}
-              onClick={() => setMoveAllLayers(true)}
-            >
-              All Layers ({project.layers.length})
-            </button>
-          </div>
-        )}
-
-        {importError && (
-          <div
-            style={{
-              position: 'absolute',
-              top: 12,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              zIndex: 55,
-              maxWidth: 'min(420px, calc(100vw - 24px))',
-            }}
-          >
-            <div
-              role="alert"
-              className="floating-card menu-pop"
-              style={{
-                padding: '6px 10px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                fontSize: 12,
-                color: 'var(--danger)',
-                borderColor: 'var(--danger)',
-              }}
-            >
-              <span>{importError}</span>
-              <button
-                type="button"
-                className="icon-btn"
-                style={{ width: 24, height: 24, flexShrink: 0 }}
-                aria-label="Dismiss import error"
-                onClick={() => setImportError(null)}
-              >
-                <X size={13} />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {layerFinderToast && (
-          <div
-            style={{
-              position: 'absolute',
-              top: !layersOpen && (tool === 'move' || hiddenLayerToast) ? 94 : 52,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              zIndex: 45,
-              pointerEvents: 'none',
-            }}
-          >
-            <div
-              role="status"
-              className="floating-card menu-pop"
-              style={{
-                padding: '5px 12px',
-                fontSize: 12,
-                fontWeight: 600,
-                color: 'var(--text-primary)',
-                transformOrigin: 'top center',
-              }}
-            >
-              {layerFinderToast}
-            </div>
-          </div>
-        )}
-
-        {hiddenLayerToast && (
-          <div
-            style={{
-              position: 'absolute',
-              top: 12,
-              left: '50%',
-              transform: 'translateX(-50%)',
-              zIndex: 45,
-            }}
-          >
-            <div
-              role="status"
-              className="floating-card menu-pop"
-              style={{
-                padding: '6px 12px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                fontSize: 12,
-                transformOrigin: 'top center',
-              }}
-            >
-              <span>Active layer is hidden</span>
-              <button
-                type="button"
-                className="btn primary"
-                style={{ padding: '3px 8px', fontSize: 11 }}
-                onClick={() => {
-                  setProjectSync((p) => {
-                    const next = [...p.layers];
-                    const cur = next[p.activeLayerIndex];
-                    if (cur) next[p.activeLayerIndex] = { ...cur, visible: true };
-                    return { ...p, layers: next };
-                  });
-                  setHiddenLayerToast(false);
-                  setRevision((r) => r + 1);
-                }}
-              >
-                Show Layer
-              </button>
-            </div>
-          </div>
-        )}
-
-        {deletedLayerToast && (
-          <div
-            role="status"
-            className="floating-card menu-pop-up"
-            style={{
-              position: 'absolute',
-              bottom: timelineOpen
-                ? Math.round(timelineHeight * uiScale) + 12
-                : Math.round(24 * uiScale),
-              right: layersOpen
-                ? Math.round(
-                    Math.min(
-                      layersWidth,
-                      typeof window !== 'undefined' ? window.innerWidth * 0.74 : layersWidth
-                    ) * uiScale
-                  ) + 12
-                : Math.round(26 * uiScale),
-              transition: timelineResizing || layersResizing
-                ? 'none'
-                : 'bottom 220ms cubic-bezier(0.22, 1, 0.36, 1), right 200ms cubic-bezier(0.22, 1, 0.36, 1)',
-              padding: '6px 10px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              fontSize: 12,
-              zIndex: 45,
-            }}
-          >
-            <span>Layer deleted</span>
-            <button
-              type="button"
-              className="btn primary"
-              style={{ padding: '3px 8px', fontSize: 11 }}
-              onClick={() => {
-                setProject((p) => ({
-                  ...p,
-                  layers: deletedLayerToast.layers,
-                  activeLayerIndex: deletedLayerToast.activeLayerIndex,
-                }));
-                setDeletedLayerToast(null);
-                setRevision((r) => r + 1);
-              }}
-            >
-              Undo
-            </button>
-            <button
-              type="button"
-              className="icon-btn"
-              style={{ width: 28, height: 28 }}
-              aria-label="Dismiss notification"
-              onClick={() => setDeletedLayerToast(null)}
-            >
-              <X size={13} />
-            </button>
-          </div>
-        )}
+        <EditorToasts
+          tool={tool}
+          moveAllLayers={moveAllLayers}
+          onSetMoveAllLayers={setMoveAllLayers}
+          layerCount={project.layers.length}
+          importError={importError}
+          onDismissImportError={() => setImportError(null)}
+          layerFinderToast={layerFinderToast}
+          hiddenLayerToast={hiddenLayerToast}
+          layersOpen={layersOpen}
+          layersWidth={layersWidth}
+          layersResizing={layersResizing}
+          timelineOpen={timelineOpen}
+          timelineHeight={timelineHeight}
+          timelineResizing={timelineResizing}
+          uiScale={uiScale}
+          onShowActiveLayer={() => {
+            setProjectSync((p) => {
+              const next = [...p.layers];
+              const cur = next[p.activeLayerIndex];
+              if (cur) next[p.activeLayerIndex] = { ...cur, visible: true };
+              return { ...p, layers: next };
+            });
+            setHiddenLayerToast(false);
+            setRevision((r) => r + 1);
+          }}
+          deletedLayerToast={deletedLayerToast}
+          onUndoDeleteLayer={() => {
+            if (!deletedLayerToast) return;
+            setProject((p) => ({
+              ...p,
+              layers: deletedLayerToast.layers,
+              activeLayerIndex: deletedLayerToast.activeLayerIndex,
+            }));
+            setDeletedLayerToast(null);
+            setRevision((r) => r + 1);
+          }}
+          onDismissDeletedLayerToast={() => setDeletedLayerToast(null)}
+        />
       </main>
 
       {showHelpModal && (
@@ -4964,6 +3330,7 @@ export function EditorScreen({
         <ExportModal
           project={project}
           palette={palette}
+          initialScope={exportScopeInit}
           onClose={() => setShowExportModal(false)}
         />
       )}

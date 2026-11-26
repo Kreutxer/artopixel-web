@@ -38,11 +38,19 @@ export interface PixelFrame {
   activeLayerIndex: number;
 }
 
+export interface CanvasFolder {
+  id: string;
+  name: string;
+  collapsed: boolean;
+  parentId?: string | null;
+}
+
 export interface CanvasDoc {
   id: string;
   name: string;
   width: number;
   height: number;
+  folderId?: string | null;
   layers: PixelLayer[];
   groups: LayerGroup[];
   activeLayerIndex: number;
@@ -63,6 +71,7 @@ export interface PixelProject {
   activeFrameIndex?: number;
   fps?: number;
   canvases?: CanvasDoc[];
+  canvasFolders?: CanvasFolder[];
   activeCanvasIndex?: number;
   sharedPalette?: number[];
   referenceDataUrl: string | null;

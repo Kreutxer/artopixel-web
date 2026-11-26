@@ -42,7 +42,7 @@ export function DeleteLayersModal({
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <h3 id="delete-layers-title" style={{ margin: 0, fontSize: 15 }}>
+          <h3 id="delete-layers-title" style={{ margin: 0, fontSize: 15, overflowWrap: 'anywhere' }}>
             {title}
           </h3>
           <button
@@ -66,12 +66,7 @@ export function DeleteLayersModal({
           </button>
           <button
             type="button"
-            className="btn"
-            style={{
-              background: 'var(--danger)',
-              borderColor: 'var(--danger)',
-              color: '#fff',
-            }}
+            className="btn danger"
             onClick={onConfirm}
           >
             Delete

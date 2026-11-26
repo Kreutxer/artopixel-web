@@ -240,16 +240,11 @@ export function ColorPanel({
   return (
     <div
       ref={containerRef}
+      className="header-pill-group"
       style={{
         position: 'relative',
-        display: 'inline-flex',
-        alignItems: 'center',
         gap: 4,
-        height: 34,
         padding: '0 6px',
-        borderRadius: 8,
-        border: '1px solid var(--border)',
-        background: 'var(--surface-elevated)',
         minWidth: 0,
       }}
     >

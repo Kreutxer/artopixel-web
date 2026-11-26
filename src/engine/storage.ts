@@ -1,5 +1,5 @@
 import { buildApxlBlob, downloadProjectApxl } from './apxlFormat';
-import { CanvasDoc, PixelFrame, PixelLayer, PixelProject, SavedPalette } from './types';
+import { CanvasDoc, CanvasFolder, PixelFrame, PixelLayer, PixelProject, SavedPalette } from './types';
 
 const DB_NAME = 'artopixel_web_db';
 const DB_VERSION = 3;
@@ -55,13 +55,17 @@ async function migrateLegacyProjectsIfNeeded(db: IDBDatabase): Promise<void> {
       const canvasStore = writeTx.objectStore(STORE_CANVASES);
       const legacyStore = writeTx.objectStore(STORE_PROJECTS);
       for (const raw of legacy) {
-        const proj = deserializeProject(raw);
-        const { meta, canvases } = splitSerializedProject(proj);
-        metaStore.put(meta);
-        for (const c of canvases) {
-          canvasStore.put(c);
+        try {
+          const proj = deserializeProject(raw);
+          const { meta, canvases } = splitSerializedProject(proj);
+          metaStore.put(meta);
+          for (const c of canvases) {
+            canvasStore.put(c);
+          }
+          legacyStore.delete(raw.id);
+        } catch {
+          // Skip corrupted legacy record so remaining projects still migrate
         }
-        legacyStore.delete(raw.id);
       }
       writeTx.oncomplete = () => resolve();
       writeTx.onerror = () => reject(writeTx.error);
@@ -103,6 +107,7 @@ interface SerializedCanvas {
   name: string;
   width: number;
   height: number;
+  folderId?: string | null;
   activeLayerIndex: number;
   frames?: SerializedFrame[];
   activeFrameIndex?: number;
@@ -121,6 +126,7 @@ interface SerializedProject {
   activeFrameIndex?: number;
   fps?: number;
   canvases?: SerializedCanvas[];
+  canvasFolders?: CanvasFolder[];
   activeCanvasIndex?: number;
   sharedPalette?: number[];
   referenceDataUrl: string | null;
@@ -200,6 +206,7 @@ function serializeProject(p: PixelProject): SerializedProject {
         name: c.name,
         width: p.width,
         height: p.height,
+        folderId: c.folderId ?? null,
         activeLayerIndex: p.activeLayerIndex,
         frames: activeTop.serializedFrames,
         activeFrameIndex: activeTop.activeIdx,
@@ -214,6 +221,7 @@ function serializeProject(p: PixelProject): SerializedProject {
       name: c.name,
       width: c.width,
       height: c.height,
+      folderId: c.folderId ?? null,
       activeLayerIndex: c.activeLayerIndex,
       frames: cf.serializedFrames,
       activeFrameIndex: cf.activeIdx,
@@ -233,6 +241,7 @@ function serializeProject(p: PixelProject): SerializedProject {
     activeFrameIndex: activeTop.activeIdx,
     fps: p.fps,
     canvases: serializedCanvases,
+    canvasFolders: p.canvasFolders,
     activeCanvasIndex: activeCanvasIdx,
     sharedPalette: p.sharedPalette,
     referenceDataUrl: p.referenceDataUrl,
@@ -262,6 +271,7 @@ function deserializeCanvas(raw: SerializedCanvas): CanvasDoc {
     name: raw.name,
     width: raw.width,
     height: raw.height,
+    folderId: raw.folderId ?? null,
     activeLayerIndex: activeFrame?.activeLayerIndex ?? raw.activeLayerIndex,
     frames,
     activeFrameIndex,
@@ -291,6 +301,7 @@ function deserializeProject(raw: SerializedProject): PixelProject {
       activeFrameIndex: activeCanvas.activeFrameIndex,
       fps: activeCanvas.fps,
       canvases,
+      canvasFolders: raw.canvasFolders,
       activeCanvasIndex,
       sharedPalette: raw.sharedPalette,
       referenceDataUrl: raw.referenceDataUrl ?? null,
@@ -348,6 +359,7 @@ export interface SerializedProjectMeta {
   height: number;
   activeCanvasIndex?: number;
   canvasIds: string[];
+  canvasFolders?: CanvasFolder[];
   sharedPalette?: number[];
   referenceDataUrl: string | null;
   referenceVisible: boolean;
@@ -409,6 +421,7 @@ function splitSerializedProject(
     height: p.height,
     activeCanvasIndex: activeIdx,
     canvasIds: rawCanvases.map((c) => c.id),
+    canvasFolders: p.canvasFolders,
     sharedPalette: p.sharedPalette,
     referenceDataUrl: p.referenceDataUrl,
     referenceVisible: p.referenceVisible,
@@ -440,6 +453,7 @@ function assembleProjectFromSplit(
     activeFrameIndex: first.activeFrameIndex,
     fps: first.fps,
     canvases: ordered,
+    canvasFolders: meta.canvasFolders,
     activeCanvasIndex: meta.activeCanvasIndex ?? 0,
     sharedPalette: meta.sharedPalette,
     referenceDataUrl: meta.referenceDataUrl,
@@ -513,12 +527,16 @@ export async function saveProject(project: PixelProject): Promise<void> {
     const existingKeysReq = canvasStore.index('by_projectId').getAllKeys(project.id);
     const existingMetaReq = metaStore.get(project.id);
 
-    existingKeysReq.onsuccess = () => {
-      const prevMeta = existingMetaReq.result as SerializedProjectMeta | undefined;
+    let keysResult: IDBValidKey[] | null = null;
+    let metaDone = false;
+    let prevMeta: SerializedProjectMeta | undefined;
+
+    const flush = () => {
+      if (keysResult === null || !metaDone) return;
       const { meta, canvases } = splitSerializedProject(project, undefined, prevMeta?.version ?? 0);
       metaStore.put(meta);
       const keepIds = new Set(canvases.map((c) => c.id));
-      for (const oldKey of existingKeysReq.result as IDBValidKey[]) {
+      for (const oldKey of keysResult) {
         if (!keepIds.has(String(oldKey))) {
           canvasStore.delete(oldKey);
         }
@@ -526,6 +544,16 @@ export async function saveProject(project: PixelProject): Promise<void> {
       for (const c of canvases) {
         canvasStore.put(c);
       }
+    };
+
+    existingKeysReq.onsuccess = () => {
+      keysResult = existingKeysReq.result as IDBValidKey[];
+      flush();
+    };
+    existingMetaReq.onsuccess = () => {
+      prevMeta = existingMetaReq.result as SerializedProjectMeta | undefined;
+      metaDone = true;
+      flush();
     };
 
     tx.oncomplete = () => resolve();
@@ -544,8 +572,12 @@ export async function saveActiveCanvas(project: PixelProject): Promise<void> {
     const existingKeysReq = canvasStore.index('by_projectId').getAllKeys(project.id);
     const existingMetaReq = metaStore.get(project.id);
 
-    existingKeysReq.onsuccess = () => {
-      const prevMeta = existingMetaReq.result as SerializedProjectMeta | undefined;
+    let keysResult: IDBValidKey[] | null = null;
+    let metaDone = false;
+    let prevMeta: SerializedProjectMeta | undefined;
+
+    const flush = () => {
+      if (keysResult === null || !metaDone) return;
       const { meta, canvases, activeCanvasId } = splitSerializedProject(
         project,
         undefined,
@@ -553,7 +585,7 @@ export async function saveActiveCanvas(project: PixelProject): Promise<void> {
       );
       metaStore.put(meta);
 
-      const existingIdSet = new Set((existingKeysReq.result as IDBValidKey[]).map(String));
+      const existingIdSet = new Set(keysResult.map(String));
       const targetIdSet = new Set(canvases.map((c) => c.id));
 
       for (const oldKey of existingIdSet) {
@@ -567,6 +599,16 @@ export async function saveActiveCanvas(project: PixelProject): Promise<void> {
           canvasStore.put(c);
         }
       }
+    };
+
+    existingKeysReq.onsuccess = () => {
+      keysResult = existingKeysReq.result as IDBValidKey[];
+      flush();
+    };
+    existingMetaReq.onsuccess = () => {
+      prevMeta = existingMetaReq.result as SerializedProjectMeta | undefined;
+      metaDone = true;
+      flush();
     };
 
     tx.oncomplete = () => resolve();

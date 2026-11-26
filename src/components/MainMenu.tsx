@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Copy,
   ImagePlus,
@@ -43,7 +43,7 @@ function formatRelativeTime(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
-function ProjectThumb({ project }: { project: PixelProject }) {
+const ProjectThumb = memo(function ProjectThumb({ project }: { project: PixelProject }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
   useEffect(() => {
     if (ref.current) {
@@ -62,7 +62,7 @@ function ProjectThumb({ project }: { project: PixelProject }) {
       }}
     />
   );
-}
+});
 
 export function MainMenu({
   theme,
@@ -95,6 +95,8 @@ export function MainMenu({
   const deleteDialogRef = useRef<HTMLDivElement | null>(null);
   useFocusTrap(newDialogRef, showNew);
   useFocusTrap(deleteDialogRef, Boolean(confirmDelete));
+  useEscapeKey(() => setShowNew(false), showNew);
+  useEscapeKey(() => setConfirmDelete(null), Boolean(confirmDelete));
   useEscapeKey(() => setOpenMenuId(null), Boolean(openMenuId));
 
   useEffect(() => {
@@ -215,19 +217,20 @@ export function MainMenu({
           display: 'flex',
           alignItems: 'center',
           gap: 8,
-          padding: '0 20px',
+          padding: '0 clamp(12px, 3vw, 20px)',
         }}
       >
-        <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, letterSpacing: '-0.3px', flex: 1 }}>
+        <h1 style={{ margin: 0, fontSize: 20, fontWeight: 800, letterSpacing: '-0.3px', flex: 1, minWidth: 0 }}>
           ArtoPixel
         </h1>
         <button
           type="button"
           className="btn"
+          style={{ whiteSpace: 'nowrap', padding: '7px 12px' }}
           onClick={() => importInputRef.current?.click()}
           title="Import a .apxl, PNG, or .ase / .aseprite file (up to 1024×1024)"
         >
-          <ImagePlus size={15} /> Import .apxl / PNG / ASE
+          <ImagePlus size={15} /> Import
         </button>
         <input
           ref={importInputRef}
@@ -268,6 +271,8 @@ export function MainMenu({
         style={{
           flex: 1,
           overflowY: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
           padding: 20,
           maxWidth: 980,
           width: '100%',
@@ -366,32 +371,30 @@ export function MainMenu({
               />
               <input
                 aria-label="Search sprites"
+                className="field-input"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search sprites..."
+                placeholder="Search projects..."
                 style={{
-                  width: '100%',
                   padding: '7px 10px 7px 32px',
                   borderRadius: 10,
-                  border: '1px solid var(--border)',
                   background: 'var(--surface)',
-                  color: 'var(--text-primary)',
                   fontSize: 13,
                 }}
               />
             </div>
             <select
               aria-label="Filter by canvas size"
+              className="field-select"
               value={sizeFilter}
               onChange={(e) =>
                 setSizeFilter(e.target.value as 'all' | 'small' | 'medium' | 'large')
               }
               style={{
+                width: 'auto',
                 padding: '7px 10px',
                 borderRadius: 10,
-                border: '1px solid var(--border)',
                 background: 'var(--surface)',
-                color: 'var(--text-primary)',
                 fontSize: 13,
               }}
             >
@@ -402,14 +405,14 @@ export function MainMenu({
             </select>
             <select
               aria-label="Sort sprites"
+              className="field-select"
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as 'recent' | 'name' | 'size')}
               style={{
+                width: 'auto',
                 padding: '7px 10px',
                 borderRadius: 10,
-                border: '1px solid var(--border)',
                 background: 'var(--surface)',
-                color: 'var(--text-primary)',
                 fontSize: 13,
               }}
             >
@@ -426,7 +429,7 @@ export function MainMenu({
               color: 'var(--text-secondary)',
             }}
           >
-            Your studio is empty — pick a Quick Start size, create a custom canvas, or drop a PNG / .aseprite file.
+            Your studio is empty — pick a Quick Start size, create a custom canvas, or drop a PNG / .aseprite / .apxl file.
           </p>
         )}
 
@@ -458,9 +461,9 @@ export function MainMenu({
             }}
           >
             <Plus size={34} color="var(--accent)" />
-            <span style={{ fontWeight: 700, fontSize: 14 }}>New Canvas</span>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>New Project</span>
             <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-              or drop PNG / .aseprite
+              or drop PNG / .aseprite / .apxl
             </span>
           </button>
 
@@ -565,19 +568,84 @@ export function MainMenu({
                       ? `${canvasCount} canvases`
                       : `${p.width}×${p.height}${frameCount > 1 ? ` · ${frameCount}F` : ''}`}
                   </span>
+                </div>
 
-                  <div
-                    data-card-menu="true"
-                    style={{ position: 'absolute', top: 5, right: 5 }}
-                  >
+                <div
+                  style={{
+                    marginTop: 8,
+                    minWidth: 0,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                >
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    {renamingId === p.id ? (
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          commitRename(p);
+                        }}
+                        style={{ display: 'flex', gap: 4, marginBottom: 4 }}
+                      >
+                        <input
+                          autoFocus
+                          aria-label="Sprite name"
+                          className="field-input"
+                          value={renameDraft}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onBlur={() => commitRename(p)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Escape') setRenamingId(null);
+                          }}
+                          style={{
+                            padding: '3px 6px',
+                            borderRadius: 6,
+                            border: '1px solid var(--accent)',
+                          }}
+                        />
+                      </form>
+                    ) : (
+                      <div
+                        onClick={() => onOpenProject(p)}
+                        style={{
+                          fontWeight: 700,
+                          fontSize: 13,
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {p.name}
+                      </div>
+                    )}
+
+                    <div
+                      className="mono"
+                      style={{
+                        marginTop: 2,
+                        fontSize: 11,
+                        color: 'var(--text-secondary)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {p.layers.length} {p.layers.length === 1 ? 'layer' : 'layers'} •{' '}
+                      {formatRelativeTime(p.updatedAt)}
+                    </div>
+                  </div>
+
+                  <div data-card-menu="true" style={{ position: 'relative', flexShrink: 0 }}>
                     <button
                       type="button"
                       className="icon-btn project-card-more"
                       style={{
-                        width: 28,
-                        height: 28,
-                        background: 'color-mix(in srgb, var(--surface) 88%, transparent)',
-                        borderColor: menuOpen ? 'var(--accent)' : 'var(--border)',
+                        width: 32,
+                        height: 32,
+                        borderRadius: 8,
+                        borderColor: menuOpen ? 'var(--accent)' : 'transparent',
                       }}
                       aria-label={`Actions for ${p.name}`}
                       aria-haspopup="menu"
@@ -588,16 +656,16 @@ export function MainMenu({
                         setOpenMenuId((cur) => (cur === p.id ? null : p.id));
                       }}
                     >
-                      <MoreHorizontal size={14} />
+                      <MoreHorizontal size={15} />
                     </button>
 
                     {menuOpen && (
                       <div
                         role="menu"
-                        className="floating-card menu-pop"
+                        className="floating-card menu-pop-up"
                         style={{
                           position: 'absolute',
-                          top: 32,
+                          bottom: 36,
                           right: 0,
                           width: 148,
                           padding: 5,
@@ -606,7 +674,7 @@ export function MainMenu({
                           flexDirection: 'column',
                           gap: 2,
                           zIndex: 40,
-                          transformOrigin: 'top right',
+                          transformOrigin: 'bottom right',
                         }}
                       >
                         <button
@@ -655,84 +723,81 @@ export function MainMenu({
                     )}
                   </div>
                 </div>
-
-                <div style={{ marginTop: 8, minWidth: 0 }}>
-                  {renamingId === p.id ? (
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        commitRename(p);
-                      }}
-                      style={{ display: 'flex', gap: 4, marginBottom: 4 }}
-                    >
-                      <input
-                        autoFocus
-                        aria-label="Sprite name"
-                        value={renameDraft}
-                        onChange={(e) => setRenameDraft(e.target.value)}
-                        onBlur={() => commitRename(p)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Escape') setRenamingId(null);
-                        }}
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          padding: '3px 6px',
-                          borderRadius: 6,
-                          border: '1px solid var(--accent)',
-                          background: 'var(--surface-elevated)',
-                          color: 'var(--text-primary)',
-                          fontSize: 12.5,
-                        }}
-                      />
-                    </form>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => onOpenProject(p)}
-                      style={{
-                        width: '100%',
-                        background: 'transparent',
-                        border: 'none',
-                        padding: 0,
-                        textAlign: 'left',
-                        color: 'inherit',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <div
-                        style={{
-                          fontWeight: 700,
-                          fontSize: 13,
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                        }}
-                      >
-                        {p.name}
-                      </div>
-                    </button>
-                  )}
-
-                  <div
-                    className="mono"
-                    style={{
-                      marginTop: 2,
-                      fontSize: 11,
-                      color: 'var(--text-secondary)',
-                      whiteSpace: 'nowrap',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                    }}
-                  >
-                    {p.layers.length} {p.layers.length === 1 ? 'layer' : 'layers'} •{' '}
-                    {formatRelativeTime(p.updatedAt)}
-                  </div>
-                </div>
               </div>
             );
           })}
         </div>
+
+        <footer
+          style={{
+            marginTop: 'auto',
+            paddingTop: 28,
+          }}
+        >
+          <div
+            style={{
+              borderTop: '1px solid var(--border)',
+              paddingTop: 14,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '8px 16px',
+              fontSize: 12,
+              color: 'var(--text-muted)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>
+                ArtoPixel Web
+              </span>
+              <span
+                className="mono"
+                style={{
+                  fontSize: 11,
+                  padding: '1px 6px',
+                  borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: 'var(--surface)',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                v1.0.0
+              </span>
+              <span>• Local-first pixel art studio</span>
+            </div>
+
+            <nav
+              aria-label="Footer links"
+              style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}
+            >
+              <a
+                href="https://github.com/Kreutxer/artopixel-web"
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ color: 'var(--text-secondary)', textDecoration: 'none', fontWeight: 600 }}
+              >
+                GitHub
+              </a>
+              <a
+                href="#docs"
+                onClick={(e) => e.preventDefault()}
+                title="Docs (coming soon)"
+                style={{ color: 'var(--text-muted)', textDecoration: 'none' }}
+              >
+                Docs
+              </a>
+              <a
+                href="#feedback"
+                onClick={(e) => e.preventDefault()}
+                title="Feedback (coming soon)"
+                style={{ color: 'var(--text-muted)', textDecoration: 'none' }}
+              >
+                Feedback
+              </a>
+            </nav>
+          </div>
+        </footer>
       </main>
 
       {showNew && (
@@ -753,131 +818,134 @@ export function MainMenu({
             <h3 id="new-canvas-title" style={{ margin: '0 0 14px' }}>
               New Canvas
             </h3>
-            <label
-              htmlFor="new-project-name"
-              style={{ fontSize: 12, color: 'var(--text-secondary)' }}
-            >
-              Project Name
-            </label>
-            <input
-              id="new-project-name"
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              style={{
-                width: '100%',
-                marginTop: 4,
-                marginBottom: 12,
-                padding: '8px 10px',
-                borderRadius: 8,
-                border: '1px solid var(--border)',
-                background: 'var(--surface-elevated)',
-                color: 'var(--text-primary)',
-              }}
-            />
-            <label
-              htmlFor="new-canvas-preset"
-              style={{
-                display: 'block',
-                fontSize: 12,
-                color: 'var(--text-secondary)',
-                marginBottom: 4,
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleCreate();
               }}
             >
-              Preset Size
-            </label>
-            <select
-              id="new-canvas-preset"
-              value={
-                width === height &&
-                ['16', '32', '48', '64', '128', '256', '512', '1024'].includes(width)
-                  ? width
-                  : 'custom'
-              }
-              onChange={(e) => {
-                if (e.target.value !== 'custom') {
-                  setWidth(e.target.value);
-                  setHeight(e.target.value);
-                  setErr(null);
+              <label
+                htmlFor="new-project-name"
+                style={{ fontSize: 12, color: 'var(--text-secondary)' }}
+              >
+                Project Name
+              </label>
+              <input
+                id="new-project-name"
+                autoFocus
+                className="field-input"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                style={{
+                  marginTop: 4,
+                  marginBottom: 12,
+                  padding: '8px 10px',
+                  borderRadius: 8,
+                }}
+              />
+              <label
+                htmlFor="new-canvas-preset"
+                style={{
+                  display: 'block',
+                  fontSize: 12,
+                  color: 'var(--text-secondary)',
+                  marginBottom: 4,
+                }}
+              >
+                Preset Size
+              </label>
+              <select
+                id="new-canvas-preset"
+                className="field-select"
+                value={
+                  width === height &&
+                    ['16', '32', '48', '64', '128', '256', '512', '1024'].includes(width)
+                    ? width
+                    : 'custom'
                 }
-              }}
-              style={{
-                width: '100%',
-                marginBottom: 12,
-                padding: '8px 10px',
-                borderRadius: 8,
-                border: '1px solid var(--border)',
-                background: 'var(--surface-elevated)',
-                color: 'var(--text-primary)',
-                fontSize: 13,
-              }}
-            >
-              <option value="custom">Custom</option>
-              {[16, 32, 48, 64, 128, 256, 512, 1024].map((s) => (
-                <option key={s} value={String(s)}>
-                  {s} × {s}
-                </option>
-              ))}
-            </select>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <input
-                type="number"
-                aria-label="Canvas width"
-                min={4}
-                max={1024}
-                value={width}
-                onChange={(e) => setWidth(e.target.value)}
-                placeholder="Width"
+                onChange={(e) => {
+                  if (e.target.value !== 'custom') {
+                    setWidth(e.target.value);
+                    setHeight(e.target.value);
+                    setErr(null);
+                  }
+                }}
                 style={{
-                  flex: 1,
-                  minWidth: 0,
+                  marginBottom: 12,
                   padding: '8px 10px',
                   borderRadius: 8,
-                  border: '1px solid var(--border)',
-                  background: 'var(--surface-elevated)',
-                  color: 'var(--text-primary)',
+                  fontSize: 13,
                 }}
-              />
-              <span aria-hidden="true">×</span>
-              <input
-                type="number"
-                aria-label="Canvas height"
-                min={4}
-                max={1024}
-                value={height}
-                onChange={(e) => setHeight(e.target.value)}
-                placeholder="Height"
-                style={{
-                  flex: 1,
-                  minWidth: 0,
-                  padding: '8px 10px',
-                  borderRadius: 8,
-                  border: '1px solid var(--border)',
-                  background: 'var(--surface-elevated)',
-                  color: 'var(--text-primary)',
-                }}
-              />
-            </div>
-            {err && (
-              <div role="alert" style={{ color: 'var(--danger)', fontSize: 12, marginTop: 8 }}>
-                {err}
+              >
+                <option value="custom">Custom</option>
+                {[16, 32, 48, 64, 128, 256, 512, 1024].map((s) => (
+                  <option key={s} value={String(s)}>
+                    {s} × {s}
+                  </option>
+                ))}
+              </select>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="number"
+                  aria-label="Canvas width"
+                  className="field-input mono"
+                  min={4}
+                  max={1024}
+                  value={width}
+                  onChange={(e) => {
+                    setWidth(e.target.value);
+                    if (err) setErr(null);
+                  }}
+                  placeholder="Width"
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: '8px 10px',
+                    borderRadius: 8,
+                  }}
+                />
+                <span aria-hidden="true">×</span>
+                <input
+                  type="number"
+                  aria-label="Canvas height"
+                  className="field-input mono"
+                  min={4}
+                  max={1024}
+                  value={height}
+                  onChange={(e) => {
+                    setHeight(e.target.value);
+                    if (err) setErr(null);
+                  }}
+                  placeholder="Height"
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: '8px 10px',
+                    borderRadius: 8,
+                  }}
+                />
               </div>
-            )}
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'flex-end',
-                gap: 8,
-                marginTop: 18,
-              }}
-            >
-              <button type="button" className="btn" onClick={() => setShowNew(false)}>
-                Cancel
-              </button>
-              <button type="button" className="btn primary" onClick={handleCreate}>
-                Create
-              </button>
-            </div>
+              {err && (
+                <div role="alert" style={{ color: 'var(--danger)', fontSize: 12, marginTop: 8 }}>
+                  {err}
+                </div>
+              )}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  gap: 8,
+                  marginTop: 18,
+                }}
+              >
+                <button type="button" className="btn" onClick={() => setShowNew(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn primary">
+                  Create
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
@@ -900,7 +968,14 @@ export function MainMenu({
             <h3 id="delete-canvas-title" style={{ margin: '0 0 8px' }}>
               Delete Canvas?
             </h3>
-            <p style={{ fontSize: 13, color: 'var(--text-secondary)', margin: '0 0 16px' }}>
+            <p
+              style={{
+                fontSize: 13,
+                color: 'var(--text-secondary)',
+                margin: '0 0 16px',
+                overflowWrap: 'anywhere',
+              }}
+            >
               Permanently delete "{confirmDelete.name}" ({confirmDelete.width}×
               {confirmDelete.height})?
             </p>

@@ -17,6 +17,7 @@
   --onion-prev: #e85a2d;
   --onion-next: #3b82f6;
   --selection-blue: #3b82f6;
+  --ease-studio: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 [data-theme='dark'] {
@@ -204,6 +205,7 @@ select:focus-visible,
   .layers-drawer,
   .layer-row,
   .floating-panel-shift,
+  .debug-hud-shift,
   .dock-tools,
   .project-card,
   .menu-pop,
@@ -274,7 +276,6 @@ select:focus-visible,
 .project-card:focus-within {
   border-color: var(--accent) !important;
   transform: translateY(-2px);
-  box-shadow: var(--shadow-sm);
 }
 
 .project-card-checker {
@@ -416,4 +417,34 @@ select:focus-visible,
 .field-select option {
   background: var(--surface);
   color: var(--text-primary);
+}
+
+.header-pill-group {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 3px;
+  gap: 2px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+}
+
+.header-pill-group.active {
+  background: var(--accent-container);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.hud-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+  color: var(--text-muted);
+}
+
+.debug-hud-shift {
+  transition: top 220ms var(--ease-studio), left 220ms var(--ease-studio);
 }

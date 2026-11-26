@@ -393,7 +393,6 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
                   fontSize: 12,
                   fontWeight: 600,
                   textAlign: 'center',
-                  outline: 'none',
                 }}
               />
             </label>
@@ -411,35 +410,25 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
               <span>Onion Skin</span>
             </button>
 
-            <span
-              className="mono"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                height: 30,
-                fontSize: 11.5,
-                color: 'var(--text-muted)',
-                paddingLeft: 4,
-              }}
-            >
-              {activeFrameIndex + 1}/{frames.length}
-            </span>
+            {frames.length > 1 && (
+              <span
+                className="mono"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  height: 30,
+                  fontSize: 11.5,
+                  color: 'var(--text-muted)',
+                  paddingLeft: 4,
+                }}
+              >
+                {activeFrameIndex + 1}/{frames.length}
+              </span>
+            )}
           </div>
 
           {/* Right: Frame CRUD */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <button
-              type="button"
-              className="btn"
-              style={{ height: 30, padding: '0 9px', fontSize: 12 }}
-              onClick={onAddFrame}
-              aria-label="Add new frame"
-              title="Add Frame"
-            >
-              <Plus size={13} />
-              <span>Frame</span>
-            </button>
-
             <button
               type="button"
               className="btn"

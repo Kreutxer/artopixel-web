@@ -70,12 +70,10 @@ export function DeleteGroupModal({
           </button>
           <button
             type="button"
-            className="btn primary"
+            className="btn danger"
             style={{
               width: '100%',
               justifyContent: 'center',
-              background: 'var(--danger)',
-              borderColor: 'var(--danger)',
             }}
             onClick={onDeleteAll}
           >
